@@ -1,0 +1,5 @@
+response:
+  ignore_json:
+    - $.order_id
+  ignore_headers:
+    - x-custom-trace

@@ -1,0 +1,22 @@
+# Demo stack: a SAFE idempotent order API and an UNSAFE one.
+#
+#   docker compose -f examples/docker-compose.yml up -d
+#
+# Safe:   http://localhost:8081/orders
+# Unsafe: http://localhost:8082/orders
+#
+# Build context is the repo root because both Dockerfiles compile from the
+# shared Go module (go.mod lives at the root).
+services:
+  safe-order-api:
+    build:
+      context: ..
+      dockerfile: examples/safe-order-api/Dockerfile
+    ports:
+      - "8081:8081"
+  unsafe-order-api:
+    build:
+      context: ..
+      dockerfile: examples/unsafe-order-api/Dockerfile
+    ports:
+      - "8082:8082"
