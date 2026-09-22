@@ -1,5 +1,11 @@
+# examples/idemcheck.yaml
+#
+# Ignore volatile noise before fingerprinting. Only ignore fields that carry
+# no business meaning — never ignore identifiers such as $.order_id, or a
+# real idempotency race will be reported as PASS.
 response:
   ignore_json:
-    - $.order_id
+    - $.request_id
+    - $.timestamp
   ignore_headers:
     - x-custom-trace

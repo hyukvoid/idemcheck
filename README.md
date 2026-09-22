@@ -1,51 +1,30 @@
 # IdemCheck
 
+[![CI](https://github.com/hyukvoid/idemcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/hyukvoid/idemcheck/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white)](https://github.com/hyukvoid/idemcheck/blob/main/go.mod)
+[![License](https://img.shields.io/github/license/hyukvoid/idemcheck)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/hyukvoid/idemcheck)](https://github.com/hyukvoid/idemcheck/releases/latest)
+
 **Break your idempotency implementation before production does.**
 
-IdemCheck is a CLI that tests whether an `Idempotency-Key` implementation
-actually survives retries and concurrency. A backend can look perfectly
-idempotent under sequential requests and still create duplicate resources the
-moment the same key arrives concurrently. IdemCheck reproduces that race
-automatically.
-
-## The 30-second demo
-
-```bash
-docker compose -f examples/docker-compose.yml up -d
-```
-
-Two `POST /orders` APIs accept the same payload and the same
-`Idempotency-Key`. One handles the key atomically; the other checks the key,
-sleeps, inserts the order, then saves the key — with no synchronization.
-
-**Safe API — passes:**
-
-```bash
-idemcheck test \
-  --url http://localhost:8081/orders \
-  --body '{"item_id":42,"qty":1}'
-```
+A CLI that stress-tests `Idempotency-Key` implementations against retries and
+concurrent duplicate requests.
 
 ```text
-Sequential retry ×2 ....................... PASS
-Sequential retry ×10 ...................... PASS
-Concurrent retry ×10 ...................... PASS
-Same key + changed payload ................ PASS
-Different key + same payload .............. PASS
+$ idemcheck test \
+    --url http://localhost:8082/orders \
+    --body-file examples/request.json
 
-Result:
-PASS
-```
+IdemCheck v0.1.3
 
-**Unsafe API — fails under concurrency:**
+Target
+POST http://localhost:8082/orders
 
-```bash
-idemcheck test \
-  --url http://localhost:8082/orders \
-  --body '{"item_id":42,"qty":1}'
-```
+Key Header
+Idempotency-Key
 
-```text
+──────────────────────────────────
+
 Sequential retry ×2 ....................... PASS
 Sequential retry ×10 ...................... PASS
 Concurrent retry ×10 ...................... FAIL
@@ -60,31 +39,59 @@ RACE CONDITION DETECTED
 1 idempotency key
 10 unique semantic responses
 
-Requests:
-10
+...
 
-Unique semantic responses:
-10
+Differing fields:
+  $.order_id
 
+...
+Result:
+FAILED
+```
+
+Same request.
+Same Idempotency-Key.
+Sent concurrently.
+
+IdemCheck checks whether your API still behaves like one operation.
+
+> **Scope:** IdemCheck validates observable HTTP response-level idempotency
+> behavior. It does not prove that every downstream side effect was
+> deduplicated.
+
+## A real failure
+
+The output above is an unedited run against the unsafe demo API on port
+`8082`. Ten requests share one key; each response carries a different
+`order_id`, so the endpoint created ten resources where there should have
+been one:
+
+```text
 Fingerprint A ×1
   status: 201
-  $.order_id: 803
+  $.order_id: 975
 
 Fingerprint B ×1
   status: 201
-  $.order_id: 807
+  $.order_id: 984
+
+Fingerprint C ×1
+  status: 201
+  $.order_id: 976
 
 ...
 
 Differing fields:
   $.order_id
 
+10 unique semantic responses observed
+
 Re-run:
 
 idemcheck test \
   --url http://localhost:8082/orders \
-  --body '{"item_id":42,"qty":1}' \
-  --key idemcheck-4f2a91c0b7d3
+  --body-file examples/request.json \
+  --key idemcheck-88ce449cded4
 
 ──────────────────────────────────
 
@@ -93,15 +100,25 @@ FAILED
 ```
 
 Sequential retries pass because the replay path is correct — only the
-concurrent burst exposes the check-then-insert race. Exit code is `1`.
+concurrent burst exposes the check-then-insert race. Exit code is `1`, and
+the printed `--key` reproduces the same run.
 
 ## Install
+
+```bash
+go install github.com/hyukvoid/idemcheck/cmd/idemcheck@v0.1.3
+```
+
+Or always get the newest release:
 
 ```bash
 go install github.com/hyukvoid/idemcheck/cmd/idemcheck@latest
 ```
 
-Or build from source:
+Both commands were verified against the public Go module proxy; each
+installs a binary that reports `IdemCheck v0.1.3`.
+
+Build from source:
 
 ```bash
 git clone https://github.com/hyukvoid/idemcheck
@@ -110,206 +127,385 @@ go build ./...
 go build -o bin/idemcheck ./cmd/idemcheck
 ```
 
-## Usage
+## 60-second demo
+
+The repository ships two toy order APIs: a safe one on `:8081` and an unsafe
+one on `:8082`.
 
 ```bash
-idemcheck test --url http://localhost:8080/orders --body '{"item_id":42}'
+git clone https://github.com/hyukvoid/idemcheck
+cd idemcheck
+docker compose -f examples/docker-compose.yml up -d
 ```
 
-```text
-idemcheck test [flags]
-
-  --url string             target URL (required)
-  --method string          HTTP method (default POST)
-  --body string            request body (inline)
-  --body-file string       request body from file
-  -H, --header strings     extra header "Name: value" (repeatable)
-  --key-header string      idempotency key header (default Idempotency-Key)
-  --key string             idempotency key (generated when omitted; set for
-                           deterministic repro)
-  --concurrency int        concurrent request count (default 10)
-  --repeat int             sequential repeat count (default 10)
-  --format string          output format: text or json (default text)
-  --allow-remote           permit testing a non-local host
-  --timeout duration       per-request HTTP timeout (default 10s)
-  --config string          YAML config file (response ignore lists)
-  --ignore-json strings    JSON path to ignore, repeatable (e.g. $.request_id)
-  --ignore-header strings  header to ignore, repeatable (e.g. x-custom-trace)
-  --max-concurrency int    safety ceiling for --concurrency (default 50)
-  --max-repeat int         safety ceiling for --repeat (default 100)
-  -v, --verbose            show per-request timing detail
-```
-
-Full example with auth:
+Run against the unsafe API — expect `FAIL` and exit code `1`:
 
 ```bash
 idemcheck test \
-  --url http://localhost:8080/orders \
-  -H "Authorization: Bearer test-token" \
-  --body-file examples/request.json \
-  --concurrency 20
+  --url http://localhost:8082/orders \
+  --body-file examples/request.json
 ```
 
-> **PowerShell tip:** prefer `--body-file` over inline `--body`. PowerShell
-> rewrites quotes inside inline JSON arguments.
+```text
+Sequential retry ×2 ....................... PASS
+Sequential retry ×10 ...................... PASS
+Concurrent retry ×10 ...................... FAIL
+Same key + changed payload ................ PASS
+Different key + same payload .............. PASS
 
-## What it checks
+──────────────────────────────────
+
+RACE CONDITION DETECTED
+...
+Result:
+FAILED
+```
+
+Run against the safe API — expect `PASS` and exit code `0`:
+
+```bash
+idemcheck test \
+  --url http://localhost:8081/orders \
+  --body-file examples/request.json
+```
+
+```text
+Sequential retry ×2 ....................... PASS
+Sequential retry ×10 ...................... PASS
+Concurrent retry ×10 ...................... PASS
+Same key + changed payload ................ PASS
+Different key + same payload .............. PASS
+
+──────────────────────────────────
+
+Result:
+PASS
+```
+
+Stop the demo:
+
+```bash
+docker compose -f examples/docker-compose.yml down
+```
+
+> **PowerShell:** prefer `--body-file` over inline `--body`; PowerShell
+> mangles inline JSON quoting.
+
+## What IdemCheck checks
 
 | Check | Requests | Passes when |
 |---|---|---|
-| Sequential retry ×2 | same key ×2 | one semantic response |
-| Sequential retry ×10 | same key ×10 | one semantic response |
-| Concurrent retry ×10 | same key ×10, barrier-released | one semantic response |
-| Same key + changed payload | same key, two payloads | conflict is rejected or original replayed (classified, not assumed) |
-| Different key + same payload | two keys (control) | endpoint distinguishes keys |
+| Sequential retry ×2 | Same key, sent one after another | One semantic response |
+| Sequential retry ×10 | Same key, sent one after another | One semantic response |
+| Concurrent retry ×10 | Same key, released through a barrier | One semantic response |
+| Same key + changed payload | Same key, different body | Conflict is rejected or the original response is replayed (classified, not assumed) |
+| Different key + same payload | Two different keys, same body (control) | Endpoint treats different keys as distinct requests |
 
-### The concurrency engine
+Each check uses its own derived idempotency key, so one scenario cannot
+contaminate another. A failed baseline request (HTTP ≥ 400) errors the run
+out with exit code `2` instead of guessing.
 
-The concurrent check is not a loop of `go send()`. Workers are spawned first,
-each signals READY and parks on a channel; only when **all** workers are
-ready does the main goroutine close the start channel, releasing every
-request at the same instant. Each worker writes to its own pre-allocated
-slot, so collection is lock-free and race-detector clean.
+Responses are compared as **semantic fingerprints**, not raw bytes:
 
-`--verbose` prints per-request start offsets and latencies so you can verify
-the burst really was simultaneous:
+```text
+HTTP response → parse → drop ignored JSON paths → canonical JSON
+             → + status + filtered headers → SHA-256
+```
+
+Key order never matters. Noise headers (`date`, `x-request-id`,
+`traceparent`, `x-amzn-trace-id`, `cf-ray`, `server-timing`) are ignored by
+default. Non-JSON bodies fall back to normalized raw comparison; malformed
+JSON never crashes the run.
+
+## Why concurrency matters
+
+Sequential retries replay a stored response; they never overlap. A
+check-then-insert race only appears when two requests evaluate the key
+before either one has stored its result:
+
+```text
+UNSAFE
+------
+
+check key
+  ↓
+small delay / work
+  ↓
+create resource
+  ↓
+store idempotency result
+
+Concurrent requests can all pass the initial check before the first one
+stores its result.
+```
+
+```text
+SAFE
+-----
+
+idempotency handling is synchronized / atomic
+  ↓
+same key resolves to the same logical result
+```
+
+The demo APIs implement exactly these two patterns. The unsafe handler
+checks the key, sleeps, inserts the order, then records the key — nothing
+serializes the window between check and insert. The safe handler takes a
+per-key mutex: the first writer creates the order and stores the response,
+every other request waits and then replays the stored bytes.
+
+A loop of `curl` sends one request at a time and cannot produce that overlap.
+IdemCheck starts all workers first, then releases them through a single
+synchronization barrier so requests begin as close together as the OS allows.
+With `--verbose` you can see how tightly the burst launched:
 
 ```text
 Timings — Concurrent retry ×10 (ms after barrier release | latency):
-  worker  0: +  0 | 254
-  worker  1: +  0 | 254
-  ...
+  worker  0: +  0 | 251
+  worker  1: +  0 | 261
+  worker  2: +  0 | 252
+  worker  3: +  0 | 261
+  worker  4: +  0 | 253
+  worker  5: +  0 | 261
+  worker  6: +  0 | 253
+  worker  7: +  0 | 253
+  worker  8: +  0 | 253
+  worker  9: +  0 | 253
   spread: all requests initiated within 0 ms of barrier release
 ```
 
-### Semantic fingerprints
+Offsets are recorded in whole milliseconds: a displayed `0 ms` spread means
+every request started within the same millisecond of barrier release — an
+observed launch spread below 1 ms, not a claim that requests left at the
+identical instant.
 
-Real responses differ byte-for-byte for reasons that don't matter:
-timestamps, `request_id`, `trace_id`, `Date`, load-balancer headers. Raw
-comparison would drown the signal in noise, so IdemCheck fingerprints a
-normalized form instead:
+## CLI examples
 
+```bash
+# See every flag
+idemcheck test --help
 ```
-HTTP response → parse → drop ignored JSON paths → canonical JSON
-             → (key order never matters) + status + filtered headers
-             → SHA-256
+
+```text
+IdemCheck sends sequential and concurrent duplicate requests sharing one
+Idempotency-Key and reports whether the endpoint produces more than one
+semantic response — the signature of an idempotency race condition.
+
+Usage:
+  idemcheck test [flags]
+
+Flags:
+      --allow-remote                permit testing a non-local host
+      --body string                 request body (inline)
+      --body-file string            request body from file
+      --concurrency int             concurrent request count (default 10)
+      --config string               YAML config file (response ignore lists)
+      --format string               output format: text or json (default "text")
+  -H, --header stringList           extra header "Name: value" (repeatable)
+  -h, --help                        help for test
+      --ignore-header stringArray   header name to ignore, repeatable (e.g. x-custom-trace)
+      --ignore-json stringArray     JSON path to ignore, repeatable (e.g. $.request_id)
+      --key string                  idempotency key (generated when omitted; set for deterministic repro)
+      --key-header string           idempotency key header name (default "Idempotency-Key")
+      --max-concurrency int         safety ceiling for --concurrency (default 50)
+      --max-repeat int              safety ceiling for --repeat (default 100)
+      --method string               HTTP method (default "POST")
+      --repeat int                  sequential repeat count (default 10)
+      --timeout duration            per-request HTTP timeout (default 10s)
+      --url string                  target URL (required)
+  -v, --verbose                     show per-request timing detail
 ```
 
-Ignore volatile fields per project:
+Common recipes:
+
+```bash
+# Authenticated endpoint
+idemcheck test \
+  --url http://localhost:8080/orders \
+  --body-file request.json \
+  -H "Authorization: Bearer $TOKEN"
+
+# Deterministic re-run of a reported failure
+idemcheck test --url http://localhost:8082/orders \
+  --body-file examples/request.json \
+  --key idemcheck-88ce449cded4
+
+# Config file + verbose timings
+idemcheck test --config examples/idemcheck.yaml \
+  --url http://localhost:8081/orders \
+  --body-file examples/request.json --verbose
+
+# Heavier burst (capped at --max-concurrency)
+idemcheck test --url http://localhost:8082/orders \
+  --body-file examples/request.json --concurrency 25 --repeat 20
+```
+
+Exit codes:
+
+| Code | Meaning |
+|---|---|
+| `0` | Pass (warnings allowed) |
+| `1` | Idempotency violation detected |
+| `2` | Configuration or execution error |
+
+## JSON / CI usage
+
+`--format json` emits a stable document with the same information as the
+text report:
+
+```bash
+idemcheck test \
+  --url http://localhost:8082/orders \
+  --body-file examples/request.json \
+  --format json > idemcheck.json
+echo "exit=$?"   # 0 pass, 1 violation, 2 error
+```
+
+The top level contains `tool`, `version`, `target`, `summary`, `checks`,
+`violations`, `evidence`, and `reproduce`. `summary` (trimmed from a real
+run):
+
+```json
+{
+  "result": "FAILED",
+  "exit_code": 1,
+  "checks_passed": 4,
+  "checks_failed": 1,
+  "checks_warned": 0,
+  "checks_skipped": 0
+}
+```
+
+`violations` (trimmed from a real run):
+
+```json
+[
+  {
+    "check": "concurrent",
+    "type": "concurrent_race",
+    "message": "10 concurrent requests\n1 idempotency key\n10 unique semantic responses",
+    "differing_fields": [
+      "$.order_id"
+    ]
+  }
+]
+```
+
+Each `evidence` entry names one fingerprint group with its status and the
+fields that differ; `reproduce.command` is a ready-to-paste re-run.
+
+Warnings do not change the exit code: a run with `checks_warned > 0` still
+exits `0` unless a check actually failed. In CI, treat exit code `1` as a
+test failure and `2` as a configuration problem.
+
+## Ignore rules
+
+Ignore rules silence volatile fields before fingerprinting:
 
 ```yaml
-# idemcheck.yaml
+# examples/idemcheck.yaml
+#
+# Ignore volatile noise before fingerprinting. Only ignore fields that carry
+# no business meaning — never ignore identifiers such as $.order_id, or a
+# real idempotency race will be reported as PASS.
 response:
   ignore_json:
     - $.request_id
     - $.timestamp
-    - $.meta.trace_id
   ignore_headers:
-    - date
-    - x-request-id
-    - traceparent
+    - x-custom-trace
 ```
 
-```bash
-idemcheck test --config idemcheck.yaml --url ... --body-file ...
+Paths use JSONPath-style prefixes (`$.request_id`, `$.meta.trace_id`,
+`$.items[*].ts`). Matched object keys are deleted; matched array elements
+become `null` so array shape stays comparable. The same rules are available
+as flags: `--ignore-json '$.request_id' --ignore-header x-custom-trace`.
+
+> **Ignore rules can suppress real violations.** Ignoring request IDs or
+> timestamps removes harmless noise, but ignoring a business identifier such
+> as `$.order_id` hides the very difference an idempotency bug produces.
+> Running the unsafe demo with `--ignore-json '$.order_id'` turns its race
+> from `FAIL` into `PASS` — and simultaneously degrades the different-keys
+> control check to `WARN`, because responses for distinct keys then look
+> identical. Review every ignore rule as carefully as the test itself.
+
+## Safety guard
+
+IdemCheck intentionally sends duplicate POST requests, so it refuses
+non-local targets unless you opt in:
+
+```console
+$ idemcheck test --url http://api.example.invalid/orders --body-file examples/request.json
+Error: refusing to test non-local target "api.example.invalid": this tool intentionally sends duplicate POST requests.
+Re-run with --allow-remote if api.example.invalid is a test/staging environment you own
 ```
 
-`date`, `x-request-id`, `traceparent`, `x-amzn-trace-id`, `cf-ray`, and
-`server-timing` are ignored out of the box. Non-JSON bodies fall back to
-normalized raw comparison; malformed JSON never crashes the run.
-
-### Evidence, not guessing
-
-IdemCheck is black-box HTTP testing. It reports what it observed:
-
-- `3 unique semantic responses observed`
-- differing JSON paths (`$.order_id`) with each fingerprint's observed values
-
-It does **not** claim anything about database rows, queue messages, emails,
-or any other downstream side effect. Identical HTTP responses are strong
-evidence, not proof, that everything behind the endpoint was deduplicated.
-Verify critical side effects with your own observability.
-
-## Automation
-
-```bash
-idemcheck test --url http://localhost:8080/orders --body-file req.json --format json
-```
-
-```json
-{
-  "tool": "IdemCheck",
-  "version": "0.1.3",
-  "target": { "url": "...", "method": "POST", "key_header": "Idempotency-Key", "key": "..." },
-  "summary": { "result": "FAILED", "exit_code": 1, "checks_passed": 4, "checks_failed": 1 },
-  "checks": [ { "id": "concurrent", "status": "fail", "requests": 10, "unique_responses": 10, "...": "..." } ],
-  "violations": [ { "check": "concurrent", "type": "concurrent_race", "differing_fields": ["$.order_id"] } ],
-  "evidence": [ { "check": "concurrent", "label": "A", "count": 1, "status": 201, "fields": { "$.order_id": 803 } } ]
-}
-```
-
-### Exit codes
-
-| Code | Meaning |
-|---|---|
-| `0` | tests passed (warnings allowed) |
-| `1` | idempotency violation detected |
-| `2` | invalid configuration or execution failure |
-
-Warnings (`WARN` checks, e.g. a key accepted for different payloads) don't
-fail the run; violations do.
-
-## Safety
-
-This tool **intentionally sends duplicate POST requests.** By default it
-refuses non-local targets:
+The command exits `2` before any request is sent. `localhost`, `127.0.0.0/8`
+and `::1` are always allowed. With `--allow-remote` the run proceeds and
+prints a loud warning first:
 
 ```text
-Error: refusing to test non-local target "api.example.com": this tool
-intentionally sends duplicate POST requests.
-Re-run with --allow-remote if api.example.com is a test/staging environment you own
+WARNING: --allow-remote set; hammering 172.26.112.1 with duplicate requests. Make sure it is not production.
 ```
 
-`localhost`, `127.0.0.0/8`, and `::1` work immediately. Request volume is
-capped (`--max-concurrency` 50, `--max-repeat` 100) so a fat-fingered flag
-can't turn into a load test.
+Only pass `--allow-remote` to test or staging systems you own. Two ceilings
+bound the blast radius: `--max-concurrency` (default `50`) and
+`--max-repeat` (default `100`); larger values are rejected with exit code
+`2`.
 
-## Examples
+## Limitations
+
+- **Response-level scope.** IdemCheck validates observable HTTP
+  response-level idempotency behavior. It does not prove that every
+  downstream side effect was deduplicated — database rows, queue messages,
+  emails, payments, and other effects are outside its view. It is a
+  black-box HTTP tool; it never inspects your storage or consumers.
+- **Passing is evidence, not proof.** A `PASS` means these runs observed one
+  semantic response, not that no interleaving anywhere could produce two.
+- **Structural detection.** Differing fields are found by structural JSON
+  diff. A resource ID embedded in an unstructured text string cannot be
+  named as a differing field; the fingerprint still differs and the check
+  still fails, but the report shows fingerprint-level evidence only.
+- **Ignore rules can hide failures.** See the warning above.
+
+## Architecture
 
 ```text
-examples/
-├── safe-order-api/     per-key mutex: first writer creates, others replay
-├── unsafe-order-api/   check → sleep → insert → save key (TOCTOU race)
-├── request.json        sample POST body
-├── idemcheck.yaml      sample ignore config
-└── docker-compose.yml
+cmd/idemcheck/        CLI entry point
+internal/cli/         flag parsing + terminal rendering
+internal/config/      options, safety guard, YAML config
+internal/engine/      sequential + barrier runners, scenario matrix
+internal/fingerprint/ normalization, ignore paths, JSON diff
+internal/httpx/       request building
+internal/models/      result schema (JSON contract)
+internal/report/      assemble + write text/JSON output
+internal/buildinfo/   version from Go build info
+examples/             safe + unsafe demo APIs, compose file, sample config
+integration/          end-to-end tests (unsafe races, safe passes)
 ```
 
-Both are small enough to read side by side — the difference between them is
-the entire point of this project.
+Workers are prepared first, then released together; results land in
+per-worker slots so the hot path takes no locks. Each response flows through
+the fingerprint pipeline above, and every scenario derives its own key from
+the base key so checks stay isolated.
 
 ## Development
 
 ```bash
-go fmt ./...
+gofmt -l .
 go vet ./...
 go test ./...
 go test -race ./...
 go build ./...
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development loop.
 
-## Limitations
-
-- Black-box HTTP only. Side effects that never reach the response body
-  (database rows, Kafka messages, emails) are out of scope — see above.
-- A pass means: across N sequential retries and N barrier-released concurrent
-  duplicates, the endpoint returned one semantic response. It is not a
-  mathematical proof of idempotency under every interleaving.
-- Resource-ID detection is structural JSON diffing; APIs that bury IDs in
-  unstructured strings get fingerprint-level evidence only.
+Issues and pull requests are welcome:
+[bug report](https://github.com/hyukvoid/idemcheck/issues/new?template=bug_report.md) ·
+[feature request](https://github.com/hyukvoid/idemcheck/issues/new?template=feature_request.md) ·
+[security policy](SECURITY.md)
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE)
