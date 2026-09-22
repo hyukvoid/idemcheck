@@ -98,13 +98,13 @@ concurrent burst exposes the check-then-insert race. Exit code is `1`.
 ## Install
 
 ```bash
-go install github.com/idemcheck/idemcheck/cmd/idemcheck@latest
+go install github.com/hyukvoid/idemcheck/cmd/idemcheck@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/idemcheck/idemcheck
+git clone https://github.com/hyukvoid/idemcheck
 cd idemcheck
 go build ./...
 go build -o bin/idemcheck ./cmd/idemcheck

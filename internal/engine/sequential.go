@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/idemcheck/idemcheck/internal/fingerprint"
-	"github.com/idemcheck/idemcheck/internal/httpx"
+	"github.com/hyukvoid/idemcheck/internal/fingerprint"
+	"github.com/hyukvoid/idemcheck/internal/httpx"
 )
 
 // Sequential sends n requests one after another with the same key.

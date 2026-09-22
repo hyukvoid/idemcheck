@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/idemcheck/idemcheck/internal/config"
-	"github.com/idemcheck/idemcheck/internal/engine"
-	"github.com/idemcheck/idemcheck/internal/models"
+	"github.com/hyukvoid/idemcheck/internal/config"
+	"github.com/hyukvoid/idemcheck/internal/engine"
+	"github.com/hyukvoid/idemcheck/internal/models"
 )
 
 // AssembleInput carries everything needed to build the final Result.

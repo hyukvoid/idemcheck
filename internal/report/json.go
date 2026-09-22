@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/idemcheck/idemcheck/internal/models"
+	"github.com/hyukvoid/idemcheck/internal/models"
 )
 
 // JSON writes the stable machine-readable result model.

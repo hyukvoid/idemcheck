@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/idemcheck/idemcheck/internal/cli"
+	"github.com/hyukvoid/idemcheck/internal/cli"
 )
 
 func main() {

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/idemcheck/idemcheck/internal/fingerprint"
-	"github.com/idemcheck/idemcheck/internal/httpx"
+	"github.com/hyukvoid/idemcheck/internal/fingerprint"
+	"github.com/hyukvoid/idemcheck/internal/httpx"
 )
 
 func testSpec(url string) httpx.Spec {

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/idemcheck/idemcheck/internal/models"
+	"github.com/hyukvoid/idemcheck/internal/models"
 )
 
 const ruleWidth = 34

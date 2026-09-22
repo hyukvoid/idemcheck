@@ -13,12 +13,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/idemcheck/idemcheck/internal/config"
-	"github.com/idemcheck/idemcheck/internal/engine"
-	"github.com/idemcheck/idemcheck/internal/fingerprint"
-	"github.com/idemcheck/idemcheck/internal/httpx"
-	"github.com/idemcheck/idemcheck/internal/models"
-	"github.com/idemcheck/idemcheck/internal/report"
+	"github.com/hyukvoid/idemcheck/internal/config"
+	"github.com/hyukvoid/idemcheck/internal/engine"
+	"github.com/hyukvoid/idemcheck/internal/fingerprint"
+	"github.com/hyukvoid/idemcheck/internal/httpx"
+	"github.com/hyukvoid/idemcheck/internal/models"
+	"github.com/hyukvoid/idemcheck/internal/report"
 )
 
 const ruleWidth = 34

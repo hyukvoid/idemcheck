@@ -6,9 +6,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/idemcheck/idemcheck/internal/fingerprint"
-	"github.com/idemcheck/idemcheck/internal/httpx"
-	"github.com/idemcheck/idemcheck/internal/models"
+	"github.com/hyukvoid/idemcheck/internal/fingerprint"
+	"github.com/hyukvoid/idemcheck/internal/httpx"
+	"github.com/hyukvoid/idemcheck/internal/models"
 )
 
 // Group aggregates responses sharing one semantic fingerprint.

@@ -1,4 +1,4 @@
-module github.com/idemcheck/idemcheck
+module github.com/hyukvoid/idemcheck
 
 go 1.27.0
 

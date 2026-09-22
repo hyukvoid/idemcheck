@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/idemcheck/idemcheck/internal/config"
-	"github.com/idemcheck/idemcheck/internal/fingerprint"
-	"github.com/idemcheck/idemcheck/internal/httpx"
-	"github.com/idemcheck/idemcheck/internal/models"
+	"github.com/hyukvoid/idemcheck/internal/config"
+	"github.com/hyukvoid/idemcheck/internal/fingerprint"
+	"github.com/hyukvoid/idemcheck/internal/httpx"
+	"github.com/hyukvoid/idemcheck/internal/models"
 )
 
 // Scenario IDs (also used to derive per-scenario idempotency keys).
