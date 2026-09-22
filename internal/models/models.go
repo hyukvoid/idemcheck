@@ -3,11 +3,9 @@
 // and must stay backward compatible within v0.x.
 package models
 
-// Tool identity.
-const (
-	ToolName = "IdemCheck"
-	Version  = "0.1.0"
-)
+// Tool identity. The version is resolved at runtime from Go build info;
+// see package buildinfo.
+const ToolName = "IdemCheck"
 
 // CheckStatus is the verdict of a single check.
 type CheckStatus string

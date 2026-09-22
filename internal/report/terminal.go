@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hyukvoid/idemcheck/internal/buildinfo"
 	"github.com/hyukvoid/idemcheck/internal/models"
 )
 
@@ -15,7 +16,7 @@ const ruleWidth = 34
 
 // Terminal writes the human-readable report.
 func Terminal(w io.Writer, res *models.Result) {
-	fmt.Fprintf(w, "%s v%s\n\n", models.ToolName, res.Version)
+	fmt.Fprintf(w, "%s %s\n\n", models.ToolName, buildinfo.Display())
 	fmt.Fprintf(w, "Target\n%s %s\n\n", res.Target.Method, res.Target.URL)
 	fmt.Fprintf(w, "Key Header\n%s\n", res.Target.KeyHeader)
 	for _, warn := range res.Warnings {

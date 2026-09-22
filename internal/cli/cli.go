@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hyukvoid/idemcheck/internal/buildinfo"
 	"github.com/hyukvoid/idemcheck/internal/config"
 	"github.com/hyukvoid/idemcheck/internal/engine"
 	"github.com/hyukvoid/idemcheck/internal/fingerprint"
@@ -55,7 +56,7 @@ func Execute() int {
 		Use:   "version",
 		Short: "Print idemcheck version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s v%s\n", models.ToolName, models.Version)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", models.ToolName, buildinfo.Display())
 		},
 	})
 

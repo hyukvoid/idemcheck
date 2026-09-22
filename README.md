@@ -239,7 +239,7 @@ idemcheck test --url http://localhost:8080/orders --body-file req.json --format 
 ```json
 {
   "tool": "IdemCheck",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "target": { "url": "...", "method": "POST", "key_header": "Idempotency-Key", "key": "..." },
   "summary": { "result": "FAILED", "exit_code": 1, "checks_passed": 4, "checks_failed": 1 },
   "checks": [ { "id": "concurrent", "status": "fail", "requests": 10, "unique_responses": 10, "...": "..." } ],

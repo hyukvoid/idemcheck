@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hyukvoid/idemcheck/internal/buildinfo"
 	"github.com/hyukvoid/idemcheck/internal/config"
 	"github.com/hyukvoid/idemcheck/internal/engine"
 	"github.com/hyukvoid/idemcheck/internal/models"
@@ -24,7 +25,7 @@ type AssembleInput struct {
 func Assemble(in AssembleInput) *models.Result {
 	res := &models.Result{
 		Tool:     models.ToolName,
-		Version:  models.Version,
+		Version:  buildinfo.Version(),
 		Target:   in.Target,
 		Warnings: in.Warnings,
 	}
