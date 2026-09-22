@@ -1,5 +1,7 @@
 # Keep image builds lean: the Dockerfiles compile from the repo root.
 .git
+.env
+.env.*
 bin
 *.exe
 *.md
