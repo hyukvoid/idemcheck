@@ -1,8 +1,10 @@
 # examples/idemcheck.yaml
 #
-# Ignore volatile noise before fingerprinting. Only ignore fields that carry
-# no business meaning — never ignore identifiers such as $.order_id, or a
-# real idempotency race will be reported as PASS.
+# Ignore volatile noise before fingerprinting. Verify every path: any field
+# can carry business identity depending on the API — a timestamp- or
+# ID-looking name is not proof of safety. Never ignore identifiers such as
+# $.order_id: the race check would then pass while the run overall reports
+# INCONCLUSIVE (exit 3), not a trustworthy pass.
 response:
   ignore_json:
     - $.request_id

@@ -7,8 +7,14 @@
 
 **Break your idempotency implementation before production does.**
 
-A CLI that stress-tests `Idempotency-Key` implementations against retries and
-concurrent duplicate requests.
+IdemCheck stress-tests the observable `Idempotency-Key` contract of HTTP APIs
+under retries and concurrent duplicate requests.
+
+Black-box by design: it is especially useful for third-party, partner, and
+vendor APIs whose internals you do not control and cannot inspect. It also
+serves as an external contract check for your own services — a useful
+second opinion that does not replace direct database, event, or payment
+assertions when those are available.
 
 ```text
 $ idemcheck test \
@@ -53,6 +59,8 @@ Differing fields:
 ...
 Result:
 FAIL
+
+Concurrency trials: 1 observed
 ```
 
 Same request.
@@ -61,11 +69,13 @@ Sent concurrently.
 
 IdemCheck checks whether your API still behaves like one operation.
 
-> **Scope:** IdemCheck validates observable HTTP response-level idempotency
-> behavior. It does not prove that every downstream side effect was
-> deduplicated — and it never claims to. The exact false-positive /
-> false-negative contract, fixture by fixture, is executed from
-> [docs/TEST_MATRIX.md](docs/TEST_MATRIX.md).
+> **What PASS means:** no violation was observed within the configured
+> HTTP-visible checks — not that the entire operation executed exactly
+> once. Hidden side effects — a database insert, a message publish, an
+> email, a payment capture — are not visible in HTTP responses, and
+> IdemCheck never claims they were deduplicated. The exact
+> false-positive / false-negative contract, fixture by fixture, is
+> executed from [docs/TEST_MATRIX.md](docs/TEST_MATRIX.md).
 
 ## A real failure
 
@@ -84,11 +94,11 @@ Unique semantic responses:
 
 Fingerprint A ×2
   status: 201
-  $.order_id: 831
+  $.order_id: 812
 
 Fingerprint B ×1
   status: 201
-  $.order_id: 822
+  $.order_id: 810
 
 ...
 
@@ -100,12 +110,14 @@ Re-run:
 idemcheck test \
   --url http://localhost:8082/orders \
   --body-file examples/request.json \
-  --key idemcheck-5426106f6278
+  --key idemcheck-69ddd9ba2823
 
 ──────────────────────────────────
 
 Result:
 FAIL
+
+Concurrency trials: 1 observed
 ```
 
 Sequential retries pass because the replay path is correct — only the
@@ -176,6 +188,8 @@ RACE CONDITION DETECTED
 ...
 Result:
 FAIL
+
+Concurrency trials: 1 observed
 ```
 
 Run against the safe API — expect `PASS` and exit code `0`:
@@ -204,7 +218,11 @@ Different key + same payload .............. PASS
 ──────────────────────────────────
 
 Result:
-PASS
+PASS (observed)
+
+Concurrency trials: 1 observed
+No divergent HTTP result was observed within the configured HTTP-visible checks.
+It does not prove hidden downstream side effects were deduplicated.
 ```
 
 Stop the demo:
@@ -255,6 +273,11 @@ with the summary:
 | `ERROR` | Execution failure: nothing usable was observed, or the baseline was rejected. | `2` |
 | `INCONCLUSIVE` | Not enough evidence: unknown statuses, lost responses, oversize bodies, or transients never confirmed by replay. Never counted as a pass. | `3` |
 
+The terminal prints a pass as `PASS (observed)`: convergence of the
+configured checks above, with any active exclusions and the trial count
+listed underneath — a screenshot of it does not assert universal
+correctness. `summary.result` in JSON stays `PASS`.
+
 A concurrent check shows how its verdict was reached:
 
 ```text
@@ -265,8 +288,10 @@ VERDICT: 11 requests converged on 1 logical result (replay agreed)
 ```
 
 - **BURST** — every worker waits on one barrier, then fires together.
-- **SETTLE** — wait `--settle` (default `250ms`) so background work can
-  finish before anything is judged.
+- **SETTLE** — wait `--settle` (default `250ms`) before anything is
+  replayed or judged. The wait is configuration, not an automatically
+  discovered completion boundary: the default suits responsive endpoints,
+  while APIs with long asynchronous processing may need a larger value.
 - **REPLAY** — the same request with the same key after the settle
   window, bounded by `--replay-timeout` (default `5s`).
 - **VERDICT** — the convergence decision, stated with its evidence.
@@ -300,8 +325,12 @@ VERDICT: Concurrency race detected in 3 / 3 trials
 
 A failing run reports `Concurrency race detected in N / M trials`; a
 clean one reports `No observable race in N trials` — evidence, never a
-proof that no race exists. `--max-trials` (default `10`) bounds the run.
+proof that no race exists. The result block always states how many trials
+were observed (`Concurrency trials: N observed`). Use multiple trials when
+race windows are timing-sensitive; no particular count provides
+mathematical proof. `--max-trials` (default `10`) bounds the run.
 
+**Optional fault scenario.** Beyond the core checks above,
 `--fault lost-response` wraps the target in a loopback-only proxy that
 drops exactly one completed response (the request still runs upstream),
 to watch a lost response become `INCONCLUSIVE` instead of a wrong
@@ -373,6 +402,40 @@ Offsets are recorded in whole milliseconds: a displayed `0 ms` spread means
 every request started within the same millisecond of barrier release — an
 observed launch spread below 1 ms, not a claim that requests left at the
 identical instant.
+
+The burst is a **single-process, client-side concurrent burst**: one
+process releases its own workers together. It does not simulate
+cross-region retries, WAN jitter, multi-client clock differences, staggered
+retry patterns, or load-balancer scheduling (see Limitations).
+
+## Why not curl / k6 / hey / vegeta?
+
+Those tools are excellent at sending traffic — sequential requests or
+load. None of them asks the idempotency question: do duplicate requests
+sharing one key still converge on one logical result?
+
+IdemCheck adds the idempotency-specific behavior those tools do not model:
+
+- **BURST → SETTLE → REPLAY → convergence verdict** — a barrier-released
+  duplicate burst, a settle window, a same-key replay, then a stated
+  verdict with its evidence.
+- **Semantic response normalization** — key order, noise headers, and
+  ignored fields never create or hide a divergence.
+- **Transient-policy handling** — `safe-retry` / `strict-replay`
+  profiles; unknown statuses become `INCONCLUSIVE`, never a guessed pass.
+- **Payload/key contract checks** — same key with a changed payload, and
+  a different key with the same payload as a control.
+- **PASS / FAIL / INCONCLUSIVE with exact divergence evidence** — which
+  fields differed, each fingerprint's values, a copy-pasteable re-run.
+- **Safety and redaction** — loopback-only by default, credentials
+  scrubbed from every output path, bounded concurrency.
+- **CI exit codes** — `0`/`1`/`2`/`3` with a JSON document that always
+  matches them.
+
+A custom concurrent test script can cover the simple cases, and if yours
+already does, keep it. IdemCheck exists to make the tricky parts
+reusable: the convergence semantics, the safety boundaries, the evidence
+format, the replay behavior, and a repeatable CI contract.
 
 ## CLI examples
 
@@ -456,7 +519,7 @@ idemcheck test --url http://localhost:8082/orders \
 idemcheck test --url http://localhost:8081/orders \
   --body-file examples/request.json --policy strict-replay
 
-# Deterministic lost-response fault (loopback-only proxy)
+# Optional fault scenario: lost response (deterministic, loopback-only)
 idemcheck test --url http://localhost:8081/orders \
   --body-file examples/request.json --fault lost-response
 ```
@@ -495,7 +558,8 @@ run):
   "checks_failed": 1,
   "checks_inconclusive": 0,
   "checks_skipped": 0,
-  "policy": "safe-retry"
+  "policy": "safe-retry",
+  "trials": 1
 }
 ```
 
@@ -518,12 +582,15 @@ Each `evidence` entry names one fingerprint group with its status and the
 fields that differ; `reproduce.command` is a ready-to-paste re-run. Each
 `checks[].phases` array records the `BURST` / `SETTLE` / `REPLAY` /
 `VERDICT` lines, and `checks[].trials` records how many isolated bursts
-produced the verdict.
+produced the verdict. `summary.trials` records the requested trial count,
+and `summary.ignore_json` / `summary.ignore_headers` list any active
+exclusions — the same exclusions the terminal prints under the result.
 
 `summary.result` is one of `PASS`, `FAILED`, `ERROR`, `INCONCLUSIVE`, and
 always matches the exit code. In CI, treat exit `1` as a test failure, `2`
 as a configuration problem, and `3` as "the run could not decide" — never
-as a pass.
+as a pass. The terminal's `PASS (observed)` label is presentation only;
+the machine result stays `PASS`.
 
 ## Ignore rules
 
@@ -548,14 +615,18 @@ Paths use JSONPath-style prefixes (`$.request_id`, `$.meta.trace_id`,
 become `null` so array shape stays comparable. The same rules are available
 as flags: `--ignore-json '$.request_id' --ignore-header x-custom-trace`.
 
-> **Ignore rules can suppress real violations.** Ignoring request IDs or
-> timestamps removes harmless noise, but ignoring a business identifier such
-> as `$.order_id` hides the very difference an idempotency bug produces.
-> Running the unsafe demo with `--ignore-json '$.order_id'` turns the race
-> check itself from `FAIL` into `PASS` while the different-keys control
-> check degrades to `INCONCLUSIVE`, because responses for distinct keys then
-> look identical — the run as a whole reports `INCONCLUSIVE` (exit `3`),
-> not a pass. Review every ignore rule as carefully as the test itself.
+> **Ignore rules weaken the observation boundary.** Any ignored field can
+> contain business identity depending on the API — a name that looks like
+> a timestamp or a request ID is no guarantee that the field carries no
+> business meaning, and IdemCheck does not guess which fields are safe.
+> Ignoring a business identifier such as `$.order_id` hides the very
+> difference an idempotency bug produces: running the unsafe demo with
+> `--ignore-json '$.order_id'` turns the race check itself from `FAIL`
+> into `PASS` while the different-keys control check degrades to
+> `INCONCLUSIVE`, because responses for distinct keys then look identical —
+> the run as a whole reports `INCONCLUSIVE` (exit `3`), not a pass. Every
+> `PASS` result block lists the active exclusions verbatim; review them as
+> carefully as the test itself.
 
 ## Safety guard
 
@@ -592,6 +663,11 @@ bound the blast radius: `--max-concurrency` (default `50`) and
   semantic response, not that no interleaving anywhere could produce two.
   `--trials N` narrows the question ("No observable race in N trials"); it
   never proves the absence of a race.
+- **One process, one client.** The synchronization barrier creates a
+  single-process client-side concurrent burst. It does not reproduce
+  cross-region retries, WAN jitter, multi-client clock differences, every
+  staggered retry pattern, or every load-balancer scheduling pattern, and
+  `--trials` repeats the observation without changing any of that.
 - **Hidden side effects stay hidden.** Internal work that never changes an
   HTTP response body is invisible to any black-box checker, including this
   one (fixture J in [docs/TEST_MATRIX.md](docs/TEST_MATRIX.md)).
