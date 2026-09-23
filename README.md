@@ -15,8 +15,6 @@ $ idemcheck test \
     --url http://localhost:8082/orders \
     --body-file examples/request.json
 
-IdemCheck v0.1.3
-
 Target
 POST http://localhost:8082/orders
 
@@ -26,18 +24,26 @@ Idempotency-Key
 ──────────────────────────────────
 
 Sequential retry ×2 ....................... PASS
+  VERDICT: 2 requests converged on 1 logical result
 Sequential retry ×10 ...................... PASS
+  VERDICT: 10 requests converged on 1 logical result
 Concurrent retry ×10 ...................... FAIL
+  BURST: 10 requests released together (spread 0 ms)
+  SETTLE: 250ms before replay
+  REPLAY: 1 request -> HTTP 201 (confirmed a logical result)
+  VERDICT: 10 distinct logical results for one idempotency key: response bodies diverge
 Same key + changed payload ................ PASS
+  VERDICT: modified payload (added "idemcheck_variant" field) replayed the original logical result (HTTP 201 -> 201)
 Different key + same payload .............. PASS
+  VERDICT: endpoint treats different keys as distinct requests: 2 unique semantic responses
 
 ──────────────────────────────────
 
 RACE CONDITION DETECTED
 
-10 concurrent requests
+11 concurrent requests
 1 idempotency key
-10 unique semantic responses
+10 distinct logical results
 
 ...
 
@@ -46,7 +52,7 @@ Differing fields:
 
 ...
 Result:
-FAILED
+FAIL
 ```
 
 Same request.
@@ -57,46 +63,49 @@ IdemCheck checks whether your API still behaves like one operation.
 
 > **Scope:** IdemCheck validates observable HTTP response-level idempotency
 > behavior. It does not prove that every downstream side effect was
-> deduplicated.
+> deduplicated — and it never claims to. The exact false-positive /
+> false-negative contract, fixture by fixture, is executed from
+> [docs/TEST_MATRIX.md](docs/TEST_MATRIX.md).
 
 ## A real failure
 
-The output above is an unedited run against the unsafe demo API on port
-`8082`. Ten requests share one key; each response carries a different
+The output above is a trimmed run against the unsafe demo API on port
+`8082` (version line and fingerprint list shortened). The burst releases
+ten requests sharing one key; each response carries a different
 `order_id`, so the endpoint created ten resources where there should have
 been one:
 
 ```text
-Fingerprint A ×1
+Requests:
+11
+
+Unique semantic responses:
+10
+
+Fingerprint A ×2
   status: 201
-  $.order_id: 975
+  $.order_id: 831
 
 Fingerprint B ×1
   status: 201
-  $.order_id: 984
-
-Fingerprint C ×1
-  status: 201
-  $.order_id: 976
+  $.order_id: 822
 
 ...
 
 Differing fields:
   $.order_id
 
-10 unique semantic responses observed
-
 Re-run:
 
 idemcheck test \
   --url http://localhost:8082/orders \
   --body-file examples/request.json \
-  --key idemcheck-88ce449cded4
+  --key idemcheck-5426106f6278
 
 ──────────────────────────────────
 
 Result:
-FAILED
+FAIL
 ```
 
 Sequential retries pass because the replay path is correct — only the
@@ -148,17 +157,25 @@ idemcheck test \
 
 ```text
 Sequential retry ×2 ....................... PASS
+  VERDICT: 2 requests converged on 1 logical result
 Sequential retry ×10 ...................... PASS
+  VERDICT: 10 requests converged on 1 logical result
 Concurrent retry ×10 ...................... FAIL
+  BURST: 10 requests released together (spread 0 ms)
+  SETTLE: 250ms before replay
+  REPLAY: 1 request -> HTTP 201 (confirmed a logical result)
+  VERDICT: 10 distinct logical results for one idempotency key: response bodies diverge
 Same key + changed payload ................ PASS
+  VERDICT: modified payload (added "idemcheck_variant" field) replayed the original logical result (HTTP 201 -> 201)
 Different key + same payload .............. PASS
+  VERDICT: endpoint treats different keys as distinct requests: 2 unique semantic responses
 
 ──────────────────────────────────
 
 RACE CONDITION DETECTED
 ...
 Result:
-FAILED
+FAIL
 ```
 
 Run against the safe API — expect `PASS` and exit code `0`:
@@ -171,10 +188,18 @@ idemcheck test \
 
 ```text
 Sequential retry ×2 ....................... PASS
+  VERDICT: 2 requests converged on 1 logical result
 Sequential retry ×10 ...................... PASS
+  VERDICT: 10 requests converged on 1 logical result
 Concurrent retry ×10 ...................... PASS
+  BURST: 10 requests released together (spread 0 ms)
+  SETTLE: 250ms before replay
+  REPLAY: 1 request -> HTTP 201 (confirmed a logical result)
+  VERDICT: 11 requests converged on 1 logical result (replay agreed)
 Same key + changed payload ................ PASS
+  VERDICT: payload conflict rejected: original HTTP 201, modified payload HTTP 409 (added "idemcheck_variant" field)
 Different key + same payload .............. PASS
+  VERDICT: endpoint treats different keys as distinct requests: 2 unique semantic responses
 
 ──────────────────────────────────
 
@@ -193,17 +218,18 @@ docker compose -f examples/docker-compose.yml down
 
 ## What IdemCheck checks
 
-| Check | Requests | Passes when |
+| Check | Requests | PASSes when |
 |---|---|---|
-| Sequential retry ×2 | Same key, sent one after another | One semantic response |
-| Sequential retry ×10 | Same key, sent one after another | One semantic response |
-| Concurrent retry ×10 | Same key, released through a barrier | One semantic response |
-| Same key + changed payload | Same key, different body | Conflict is rejected or the original response is replayed (classified, not assumed) |
+| Sequential retry ×2 | Same key, sent one after another | One logical result |
+| Sequential retry ×10 | Same key, sent one after another | One logical result |
+| Concurrent retry ×10 | Same key, released through a barrier, then settled and replayed | Every observed 2xx body is one logical result |
+| Same key + changed payload | Same key, different body | The conflict is rejected (4xx) or the original result is replayed (classified, not assumed) |
 | Different key + same payload | Two different keys, same body (control) | Endpoint treats different keys as distinct requests |
 
 Each check uses its own derived idempotency key, so one scenario cannot
 contaminate another. A failed baseline request (HTTP ≥ 400) errors the run
-out with exit code `2` instead of guessing.
+out with exit code `2` instead of guessing; evidence that cannot decide a
+question is reported `INCONCLUSIVE` (exit `3`), never as a pass.
 
 Responses are compared as **semantic fingerprints**, not raw bytes:
 
@@ -216,6 +242,75 @@ Key order never matters. Noise headers (`date`, `x-request-id`,
 `traceparent`, `x-amzn-trace-id`, `cf-ray`, `server-timing`) are ignored by
 default. Non-JSON bodies fall back to normalized raw comparison; malformed
 JSON never crashes the run.
+
+## Verdicts, phases, policies
+
+Every check ends in one of four verdicts, and the exit code always agrees
+with the summary:
+
+| Verdict | Meaning | Exit |
+|---|---|---|
+| `PASS` | Observations converged on one logical result (or the contract under test was met). | `0` |
+| `FAIL` | Concrete divergence: distinct success bodies for one key, or two logical results under one key for two payloads. | `1` |
+| `ERROR` | Execution failure: nothing usable was observed, or the baseline was rejected. | `2` |
+| `INCONCLUSIVE` | Not enough evidence: unknown statuses, lost responses, oversize bodies, or transients never confirmed by replay. Never counted as a pass. | `3` |
+
+A concurrent check shows how its verdict was reached:
+
+```text
+BURST: 10 requests released together (spread 0 ms)
+SETTLE: 250ms before replay
+REPLAY: 1 request -> HTTP 201 (confirmed a logical result)
+VERDICT: 11 requests converged on 1 logical result (replay agreed)
+```
+
+- **BURST** — every worker waits on one barrier, then fires together.
+- **SETTLE** — wait `--settle` (default `250ms`) so background work can
+  finish before anything is judged.
+- **REPLAY** — the same request with the same key after the settle
+  window, bounded by `--replay-timeout` (default `5s`).
+- **VERDICT** — the convergence decision, stated with its evidence.
+
+Two policy profiles decide what counts as an acceptable transient:
+
+- `safe-retry` (default) treats `409`, `429`, `503` as policy transients.
+  A transient never passes on its own: it joins a `PASS` only when the
+  replay answers with a logical result that matches the burst.
+- `strict-replay` accepts no transients: in same-key checks any
+  non-success response — including `409`/`429`/`503` — drives the verdict
+  to `INCONCLUSIVE` rather than a pass.
+
+Select with `--policy`; override the transient set with
+`--transient-status 429,503`. Statuses outside the profile are never
+guessed — they mean `INCONCLUSIVE`.
+
+Repeat the burst with isolated per-trial keys to press on a race:
+
+```bash
+idemcheck test --url http://localhost:8082/orders \
+  --body-file examples/request.json --trials 3
+```
+
+```text
+BURST: 10 requests × 3 trials (isolated per-trial keys)
+SETTLE: 250ms × 3 trials
+REPLAY: 3/3 confirmed a logical result
+VERDICT: Concurrency race detected in 3 / 3 trials
+```
+
+A failing run reports `Concurrency race detected in N / M trials`; a
+clean one reports `No observable race in N trials` — evidence, never a
+proof that no race exists. `--max-trials` (default `10`) bounds the run.
+
+`--fault lost-response` wraps the target in a loopback-only proxy that
+drops exactly one completed response (the request still runs upstream),
+to watch a lost response become `INCONCLUSIVE` instead of a wrong
+verdict:
+
+```text
+Sequential retry ×2 ....................... INCONCLUSIVE
+  VERDICT: 1/2 requests failed before a verdict: Post "...": EOF
+```
 
 ## Why concurrency matters
 
@@ -289,31 +384,45 @@ idemcheck test --help
 ```text
 IdemCheck sends sequential and concurrent duplicate requests sharing one
 Idempotency-Key and reports whether the endpoint produces more than one
-semantic response — the signature of an idempotency race condition.
+logical result — the signature of an idempotency race condition.
+
+Every check reports PASS, FAIL, or INCONCLUSIVE (observations were
+insufficient; never silently treated as a pass).
+
+Exit codes: 0 pass, 1 violation, 2 config/execution error, 3 inconclusive.
 
 Usage:
   idemcheck test [flags]
 
 Flags:
-      --allow-remote                permit testing a non-local host
-      --body string                 request body (inline)
-      --body-file string            request body from file
-      --concurrency int             concurrent request count (default 10)
-      --config string               YAML config file (response ignore lists)
-      --format string               output format: text or json (default "text")
-  -H, --header stringList           extra header "Name: value" (repeatable)
-  -h, --help                        help for test
-      --ignore-header stringArray   header name to ignore, repeatable (e.g. x-custom-trace)
-      --ignore-json stringArray     JSON path to ignore, repeatable (e.g. $.request_id)
-      --key string                  idempotency key (generated when omitted; set for deterministic repro)
-      --key-header string           idempotency key header name (default "Idempotency-Key")
-      --max-concurrency int         safety ceiling for --concurrency (default 50)
-      --max-repeat int              safety ceiling for --repeat (default 100)
-      --method string               HTTP method (default "POST")
-      --repeat int                  sequential repeat count (default 10)
-      --timeout duration            per-request HTTP timeout (default 10s)
-      --url string                  target URL (required)
-  -v, --verbose                     show per-request timing detail
+      --allow-remote                   permit testing a non-local host
+      --body string                    request body (inline)
+      --body-file string               request body from file
+      --concurrency int                concurrent request count (default 10)
+      --config string                  YAML config file (response ignore lists)
+      --fault string                   deterministic fault injection: none or lost-response (local proxy drops the first completed response) (default "none")
+      --format string                  output format: text or json (default "text")
+  -H, --header stringList              extra header "Name: value" (repeatable)
+  -h, --help                           help for test
+      --ignore-header stringArray      header name to ignore, repeatable (e.g. x-custom-trace)
+      --ignore-json stringArray        JSON path to ignore, repeatable (e.g. $.request_id)
+      --key string                     idempotency key (generated when omitted; set for deterministic repro)
+      --key-header string              idempotency key header name (default "Idempotency-Key")
+      --max-body-bytes int             per-response body read limit; larger bodies make the check inconclusive (default 4194304)
+      --max-concurrency int            safety ceiling for --concurrency (default 50)
+      --max-repeat int                 safety ceiling for --repeat (default 100)
+      --max-trials int                 safety ceiling for --trials (default 10)
+      --method string                  HTTP method (default "POST")
+      --policy string                  verdict policy: safe-retry (default) or strict-replay (from config when empty)
+      --repeat int                     sequential repeat count (default 10)
+      --replay-timeout duration        retry budget for the replay phase (default 5s)
+      --sensitive-header stringArray   extra header name to redact from all output (repeatable)
+      --settle duration                wait after the burst before the replay phase (default 250ms)
+      --timeout duration               per-request HTTP timeout (default 10s)
+      --transient-status ints          HTTP statuses treated as acceptable transients, e.g. 409,429 (overrides --policy default and config)
+      --trials int                     isolated concurrent bursts for race detection (each gets its own key) (default 1)
+      --url string                     target URL (required)
+  -v, --verbose                        show per-request timing detail
 ```
 
 Common recipes:
@@ -338,15 +447,28 @@ idemcheck test --config examples/idemcheck.yaml \
 # Heavier burst (capped at --max-concurrency)
 idemcheck test --url http://localhost:8082/orders \
   --body-file examples/request.json --concurrency 25 --repeat 20
+
+# Repeat the burst with isolated per-trial keys; report a race ratio
+idemcheck test --url http://localhost:8082/orders \
+  --body-file examples/request.json --trials 3
+
+# Strict evidence: no policy transients accepted
+idemcheck test --url http://localhost:8081/orders \
+  --body-file examples/request.json --policy strict-replay
+
+# Deterministic lost-response fault (loopback-only proxy)
+idemcheck test --url http://localhost:8081/orders \
+  --body-file examples/request.json --fault lost-response
 ```
 
-Exit codes:
+Exit codes (precedence `1` > `2` > `3` > `0`):
 
 | Code | Meaning |
 |---|---|
-| `0` | Pass (warnings allowed) |
-| `1` | Idempotency violation detected |
-| `2` | Configuration or execution error |
+| `0` | `PASS` — every check converged on one logical result |
+| `1` | `FAIL` — a concrete divergence was observed |
+| `2` | `ERROR` — configuration or execution problem |
+| `3` | `INCONCLUSIVE` — insufficient evidence; never treated as a pass |
 
 ## JSON / CI usage
 
@@ -358,7 +480,7 @@ idemcheck test \
   --url http://localhost:8082/orders \
   --body-file examples/request.json \
   --format json > idemcheck.json
-echo "exit=$?"   # 0 pass, 1 violation, 2 error
+echo "exit=$?"   # 0 pass, 1 violation, 2 error, 3 inconclusive
 ```
 
 The top level contains `tool`, `version`, `target`, `summary`, `checks`,
@@ -371,8 +493,9 @@ run):
   "exit_code": 1,
   "checks_passed": 4,
   "checks_failed": 1,
-  "checks_warned": 0,
-  "checks_skipped": 0
+  "checks_inconclusive": 0,
+  "checks_skipped": 0,
+  "policy": "safe-retry"
 }
 ```
 
@@ -383,7 +506,7 @@ run):
   {
     "check": "concurrent",
     "type": "concurrent_race",
-    "message": "10 concurrent requests\n1 idempotency key\n10 unique semantic responses",
+    "message": "11 concurrent requests\n1 idempotency key\n10 distinct logical results",
     "differing_fields": [
       "$.order_id"
     ]
@@ -392,11 +515,15 @@ run):
 ```
 
 Each `evidence` entry names one fingerprint group with its status and the
-fields that differ; `reproduce.command` is a ready-to-paste re-run.
+fields that differ; `reproduce.command` is a ready-to-paste re-run. Each
+`checks[].phases` array records the `BURST` / `SETTLE` / `REPLAY` /
+`VERDICT` lines, and `checks[].trials` records how many isolated bursts
+produced the verdict.
 
-Warnings do not change the exit code: a run with `checks_warned > 0` still
-exits `0` unless a check actually failed. In CI, treat exit code `1` as a
-test failure and `2` as a configuration problem.
+`summary.result` is one of `PASS`, `FAILED`, `ERROR`, `INCONCLUSIVE`, and
+always matches the exit code. In CI, treat exit `1` as a test failure, `2`
+as a configuration problem, and `3` as "the run could not decide" — never
+as a pass.
 
 ## Ignore rules
 
@@ -424,10 +551,11 @@ as flags: `--ignore-json '$.request_id' --ignore-header x-custom-trace`.
 > **Ignore rules can suppress real violations.** Ignoring request IDs or
 > timestamps removes harmless noise, but ignoring a business identifier such
 > as `$.order_id` hides the very difference an idempotency bug produces.
-> Running the unsafe demo with `--ignore-json '$.order_id'` turns its race
-> from `FAIL` into `PASS` — and simultaneously degrades the different-keys
-> control check to `WARN`, because responses for distinct keys then look
-> identical. Review every ignore rule as carefully as the test itself.
+> Running the unsafe demo with `--ignore-json '$.order_id'` turns the race
+> check itself from `FAIL` into `PASS` while the different-keys control
+> check degrades to `INCONCLUSIVE`, because responses for distinct keys then
+> look identical — the run as a whole reports `INCONCLUSIVE` (exit `3`),
+> not a pass. Review every ignore rule as carefully as the test itself.
 
 ## Safety guard
 
@@ -462,6 +590,11 @@ bound the blast radius: `--max-concurrency` (default `50`) and
   black-box HTTP tool; it never inspects your storage or consumers.
 - **Passing is evidence, not proof.** A `PASS` means these runs observed one
   semantic response, not that no interleaving anywhere could produce two.
+  `--trials N` narrows the question ("No observable race in N trials"); it
+  never proves the absence of a race.
+- **Hidden side effects stay hidden.** Internal work that never changes an
+  HTTP response body is invisible to any black-box checker, including this
+  one (fixture J in [docs/TEST_MATRIX.md](docs/TEST_MATRIX.md)).
 - **Structural detection.** Differing fields are found by structural JSON
   diff. A resource ID embedded in an unstructured text string cannot be
   named as a differing field; the fingerprint still differs and the check
@@ -473,14 +606,16 @@ bound the blast radius: `--max-concurrency` (default `50`) and
 ```text
 cmd/idemcheck/        CLI entry point
 internal/cli/         flag parsing + terminal rendering
-internal/config/      options, safety guard, YAML config
-internal/engine/      sequential + barrier runners, scenario matrix
+internal/config/      options, safety guard, YAML config, policy profiles
+internal/engine/      sequential + barrier runners, replay, trials, scenarios
 internal/fingerprint/ normalization, ignore paths, JSON diff
-internal/httpx/       request building
+internal/httpx/       request building, response reading, fault proxy
 internal/models/      result schema (JSON contract)
+internal/redact/      credential redaction for every output path
 internal/report/      assemble + write text/JSON output
 internal/buildinfo/   version from Go build info
 examples/             safe + unsafe demo APIs, compose file, sample config
+docs/                 executed test matrix, release design
 integration/          end-to-end tests (unsafe races, safe passes)
 ```
 
@@ -499,7 +634,12 @@ go test -race ./...
 go build ./...
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development loop.
+`go test ./...` executes the reference fixtures A–J on every run; their
+expected verdicts and the false-positive / false-negative contract live in
+[docs/TEST_MATRIX.md](docs/TEST_MATRIX.md).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full development loop and
+[docs/RELEASE.md](docs/RELEASE.md) for the release design.
 
 Issues and pull requests are welcome:
 [bug report](https://github.com/hyukvoid/idemcheck/issues/new?template=bug_report.md) ·

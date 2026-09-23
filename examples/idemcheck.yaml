@@ -9,3 +9,18 @@ response:
     - $.timestamp
   ignore_headers:
     - x-custom-trace
+
+# Verdict policy (optional). CLI flags override these values.
+# policy:
+#   profile: safe-retry              # or: strict-replay
+#   transient_statuses: [409, 429, 503]  # replaces the profile's defaults
+#
+# Extra header names to redact from all output, on top of the built-in
+# Authorization / Cookie / *-token / *-secret / *-key style redactions.
+# The header is still SENT — it is only hidden from reports and errors.
+# security:
+#   sensitive_headers:
+#     - X-Internal-Session
+#
+# Multi-trial race detection (--trials / --max-trials) and fault injection
+# (--fault lost-response) are CLI-only flags; they have no config keys.

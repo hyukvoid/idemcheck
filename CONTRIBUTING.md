@@ -5,8 +5,8 @@ to be squeaky clean under the race detector.
 
 ## Ground rules
 
-- Scope: proving an Idempotency-Key implementation survives retries and
-  concurrent duplicates. Features outside that sentence (dashboards,
+- Scope: checking that an Idempotency-Key implementation survives retries
+  and concurrent duplicates. Features outside that sentence (dashboards,
   observability platforms, chaos engineering) will be declined.
 - Correctness > simple UX > reproducibility > maintainability > cleverness.
 - Comments explain **why**, especially around concurrency. No filler comments.
@@ -23,6 +23,11 @@ go build ./...
 
 All five must pass before a PR is ready. `go test -race ./...` is
 non-negotiable — a tool that hunts races must not have any.
+
+`go test ./...` also executes the reference fixtures A–J against
+[docs/TEST_MATRIX.md](docs/TEST_MATRIX.md). If a verdict change makes them
+fail, fix the code *and* the matrix expectations in the same PR — they may
+not drift apart.
 
 ### Manual check
 
@@ -43,7 +48,9 @@ Replace `go run` with a built binary if you prefer. On PowerShell, prefer
 - Keep the dependency list small. Adding a dependency needs a justification
   in the PR description.
 - Result JSON (`--format json`) is a stable contract: changing existing
-  fields needs a note in the PR; prefer adding new fields.
+  fields needs a note in the PR; prefer adding new fields. Exit codes and
+  `summary.result` values are contract too.
+- Release process (design only): [docs/RELEASE.md](docs/RELEASE.md).
 
 ## Reporting bugs
 
