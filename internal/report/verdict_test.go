@@ -88,13 +88,14 @@ func TestPayloadViolationType(t *testing.T) {
 }
 
 // Terminal rendering maps the JSON verdict strings to labels; FAIL (not
-// FAILED) is what the user sees.
+// FAILED) is what the user sees, and a pass carries the observational
+// qualifier the machine result does not.
 func TestResultLabel(t *testing.T) {
 	cases := []struct {
 		exit int
 		want string
 	}{
-		{models.ExitPass, "PASS"},
+		{models.ExitPass, "PASS (observed)"},
 		{models.ExitViolation, "FAIL"},
 		{models.ExitFailure, "ERROR"},
 		{models.ExitInconclusive, "INCONCLUSIVE"},

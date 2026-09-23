@@ -56,6 +56,11 @@ func Assemble(in AssembleInput) *models.Result {
 	if res.Summary.Policy == "" {
 		res.Summary.Policy = config.DefaultPolicyProfile
 	}
+	// Run context the terminal surfaces so a screenshot of the result shows
+	// how much was observed and what was excluded from comparison.
+	res.Summary.Trials = in.Options.Trials
+	res.Summary.IgnoreJSON = in.Options.IgnoreJSON
+	res.Summary.IgnoreHeaders = in.Options.IgnoreHeader
 
 	// Precedence: a proven violation outranks an execution error, which
 	// outranks insufficient observations. Uncertainty is never a pass.

@@ -36,15 +36,20 @@ type Target struct {
 	Key       string `json:"key"`
 }
 
-// Summary is the top-level verdict.
+// Summary is the top-level verdict. The machine fields (result, exit_code,
+// counts) are the stable v1 contract; trials and the ignore_* lists are
+// additive context the terminal uses to state trial/exclusion visibility.
 type Summary struct {
-	Result             string `json:"result"` // PASS | FAILED | ERROR | INCONCLUSIVE
-	ExitCode           int    `json:"exit_code"`
-	ChecksPassed       int    `json:"checks_passed"`
-	ChecksFailed       int    `json:"checks_failed"`
-	ChecksInconclusive int    `json:"checks_inconclusive"`
-	ChecksSkipped      int    `json:"checks_skipped"`
-	Policy             string `json:"policy"` // safe-retry | strict-replay
+	Result             string   `json:"result"` // PASS | FAILED | ERROR | INCONCLUSIVE
+	ExitCode           int      `json:"exit_code"`
+	ChecksPassed       int      `json:"checks_passed"`
+	ChecksFailed       int      `json:"checks_failed"`
+	ChecksInconclusive int      `json:"checks_inconclusive"`
+	ChecksSkipped      int      `json:"checks_skipped"`
+	Policy             string   `json:"policy"`                   // safe-retry | strict-replay
+	Trials             int      `json:"trials,omitempty"`         // requested concurrency trials
+	IgnoreJSON         []string `json:"ignore_json,omitempty"`    // response JSON paths excluded from comparison
+	IgnoreHeaders      []string `json:"ignore_headers,omitempty"` // response headers excluded from comparison
 }
 
 // RequestTiming records one request's position in time relative to the

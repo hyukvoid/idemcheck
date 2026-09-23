@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/hyukvoid/idemcheck/internal/buildinfo"
+	"github.com/hyukvoid/idemcheck/internal/engine"
 	"github.com/hyukvoid/idemcheck/internal/models"
 )
 
@@ -39,11 +40,14 @@ func Terminal(w io.Writer, res *models.Result) {
 	}
 
 	fmt.Fprintf(w, "\n%s\n\n", strings.Repeat("─", ruleWidth))
-	fmt.Fprintf(w, "Result:\n%s\n", resultLabel(res.Summary))
+	renderResult(w, res)
 }
 
 // resultLabel is the terminal rendering of the top-level verdict. JSON keeps
 // the stable string form (summary.result), including "FAILED" for exit 1.
+// A pass is qualified so a screenshot of the output cannot be over-read as
+// a claim of universal idempotency: it states what was observed, not what
+// hidden side effects did.
 func resultLabel(s models.Summary) string {
 	switch s.ExitCode {
 	case models.ExitViolation:
@@ -53,8 +57,73 @@ func resultLabel(s models.Summary) string {
 	case models.ExitInconclusive:
 		return "INCONCLUSIVE"
 	default:
-		return "PASS"
+		if len(s.IgnoreJSON) > 0 || len(s.IgnoreHeaders) > 0 {
+			return "PASS (observed, with exclusions)"
+		}
+		return "PASS (observed)"
 	}
+}
+
+// renderResult prints the verdict and its observational context: active
+// exclusions (never hidden on a pass), the concurrency trial count, and —
+// for a pass — the one-line statement of what the pass does and does not
+// establish. Machine output is unaffected: JSON carries summary.result and
+// the exit code unchanged.
+func renderResult(w io.Writer, res *models.Result) {
+	s := res.Summary
+	fmt.Fprintf(w, "Result:\n%s\n", resultLabel(s))
+
+	var ctx []string
+	// Active exclusions are listed verbatim: an ignored field is invisible
+	// to comparison, and the reader — not a heuristic — judges whether any
+	// of them carried business meaning.
+	if len(s.IgnoreJSON) > 0 {
+		ctx = append(ctx, "Ignored response fields:")
+		for _, p := range s.IgnoreJSON {
+			ctx = append(ctx, "  "+p)
+		}
+	}
+	if len(s.IgnoreHeaders) > 0 {
+		ctx = append(ctx, "Ignored headers:")
+		for _, h := range s.IgnoreHeaders {
+			ctx = append(ctx, "  "+h)
+		}
+	}
+	if n, ok := observedTrials(res); ok {
+		ctx = append(ctx, fmt.Sprintf("Concurrency trials: %d observed", n))
+	}
+	if s.ExitCode == models.ExitPass {
+		ctx = append(ctx,
+			"No divergent HTTP result was observed within the configured HTTP-visible checks.",
+			"It does not prove hidden downstream side effects were deduplicated.")
+	}
+	if len(ctx) == 0 {
+		return
+	}
+	fmt.Fprint(w, "\n")
+	for _, line := range ctx {
+		fmt.Fprintln(w, line)
+	}
+}
+
+// observedTrials reports the trial count only when the concurrent check
+// actually reached a verdict: a skipped or errored burst must never claim
+// an observed trial.
+func observedTrials(res *models.Result) (int, bool) {
+	if res.Summary.Trials < 1 {
+		return 0, false
+	}
+	for _, c := range res.Checks {
+		if c.ID != engine.ScConcurrent {
+			continue
+		}
+		switch c.Status {
+		case models.StatusPass, models.StatusFail, models.StatusInconclusive:
+			return res.Summary.Trials, true
+		}
+		return 0, false
+	}
+	return 0, false
 }
 
 // renderCheckLine prints "Name ...... STATUS" with names padded to a column,
