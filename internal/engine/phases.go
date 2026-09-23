@@ -62,10 +62,20 @@ func hasTransientGroup(res *CheckResult, pol config.Policy) bool {
 // finalizeSameKey runs SETTLE+REPLAY when it can still change the verdict,
 // then evaluates. Replay runs when alwaysReplay (the concurrent check:
 // confirm the stored logical result after the burst settles) or when
-// transients are present (sequential). A rejected baseline makes the extra
-// request pointless.
+// transients are present (sequential).
+//
+// A baseline blocks the replay only when the policy does NOT tolerate it
+// (400/401/403/5xx, or any >=400 under strict-replay): then the extra
+// request cannot change a verdict that is already inconclusive. A policy
+// transient baseline (409/429/503 under safe-retry) must NOT block it —
+// the burst may have tripped the rate limit itself, and in a concurrent
+// burst any response can be the one observed first. Gating on which
+// response landed in the baseline slot would make identical evidence
+// produce different verdicts. PASS still requires observed success bodies
+// plus a replay that answered with a logical result.
 func (r *Runner) finalizeSameKey(ctx context.Context, res *CheckResult, spec httpx.Spec, key string, pol config.Policy, alwaysReplay bool) error {
-	baselineRejected := res.Observed > 0 && res.BaselineStatus >= 400
+	baselineRejected := res.Observed > 0 && res.BaselineStatus >= 400 &&
+		!pol.IsTransient(res.BaselineStatus)
 	var rp *ReplayInfo
 	if !baselineRejected && (alwaysReplay || hasTransientGroup(res, pol)) {
 		info, err := r.settleAndReplay(ctx, res, spec, key, pol)

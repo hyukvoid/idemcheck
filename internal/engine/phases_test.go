@@ -27,6 +27,81 @@ func keyedServer(perKey *map[string]int, mu *sync.Mutex) *httptest.Server {
 	}))
 }
 
+// In a burst any response can end up in the baseline slot. Whether the
+// REPLAY runs must therefore depend on evidence content (policy status
+// classes), never on which response was observed first — otherwise the
+// same evidence would produce different verdicts on different runs.
+func TestReplayTriggerIgnoresObservationOrder(t *testing.T) {
+	var mu sync.Mutex
+	perKey := map[string]int{}
+	srv := keyedServer(&perKey, &mu)
+	defer srv.Close()
+
+	// finalize runs the check's settle/replay/evaluate pipeline for a
+	// crafted evidence set with an explicit baseline status.
+	finalize := func(t *testing.T, res *CheckResult, pol config.Policy) {
+		t.Helper()
+		r := newRunner(srv.URL, `{"item_id":42}`)
+		r.ReplayTimeout = time.Second
+		key := configKey(r.BaseKey, ScConcurrent)
+		if err := r.finalizeSameKey(context.Background(), res, r.Spec, key, pol, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	phases := func(res *CheckResult) string { return strings.Join(res.ActionPhases, "\n") }
+
+	transient := group(429, `{"error":"rate limited"}`, 1)
+	success := group(200, `{"ok":true}`, 1)
+
+	t.Run("transient observed first still replays and confirms", func(t *testing.T) {
+		res := result(success, transient)
+		res.BaselineStatus = 429 // the rate-limited answer was observed first
+		finalize(t, res, safePolicy(t))
+		if !strings.Contains(phases(res), "REPLAY:") {
+			t.Fatalf("policy transient baseline must not block the replay:\n%s", phases(res))
+		}
+		if res.Status != models.StatusPass {
+			t.Fatalf("status = %s (%s), want PASS confirmed by replay", res.Status, res.Detail)
+		}
+		if res.Replay == nil || !res.Replay.Confirmed {
+			t.Errorf("replay info = %+v, want confirmed", res.Replay)
+		}
+	})
+
+	t.Run("same evidence with the success observed first also passes", func(t *testing.T) {
+		res := result(success, transient)
+		res.BaselineStatus = 200 // arrival order flipped, evidence identical
+		finalize(t, res, safePolicy(t))
+		if res.Status != models.StatusPass {
+			t.Fatalf("status = %s (%s): identical evidence must give identical verdicts", res.Status, res.Detail)
+		}
+	})
+
+	t.Run("non-policy rejection still blocks the replay", func(t *testing.T) {
+		res := result(success, group(500, `{"error":"boom"}`, 1))
+		res.BaselineStatus = 500
+		finalize(t, res, safePolicy(t))
+		if strings.Contains(phases(res), "REPLAY:") {
+			t.Errorf("a 500 baseline must still block the replay:\n%s", phases(res))
+		}
+		if res.Status != models.StatusInconclusive {
+			t.Fatalf("status = %s (%s), want INCONCLUSIVE (500 is unknown to the policy)", res.Status, res.Detail)
+		}
+	})
+
+	t.Run("strict-replay blocks any >=400 baseline", func(t *testing.T) {
+		res := result(success, transient)
+		res.BaselineStatus = 429
+		finalize(t, res, strictPolicy(t))
+		if strings.Contains(phases(res), "REPLAY:") {
+			t.Errorf("strict-replay tolerates no transients, so 429 must block the replay:\n%s", phases(res))
+		}
+		if res.Status != models.StatusInconclusive {
+			t.Fatalf("status = %s (%s), want INCONCLUSIVE under strict-replay", res.Status, res.Detail)
+		}
+	})
+}
+
 // A single trial must expose the full phase chain: BURST (released
 // together), SETTLE, REPLAY (confirming the stored result) and a verdict
 // that notes the replay agreed.
