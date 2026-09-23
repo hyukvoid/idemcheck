@@ -3,9 +3,9 @@
 //
 // A binary installed with
 //
-//	go install github.com/hyukvoid/idemcheck/cmd/idemcheck@v0.1.3
+//	go install github.com/hyukvoid/idemcheck/cmd/idemcheck@vX.Y.Z
 //
-// carries "v0.1.3" as its main module version, stamped by the go tool.
+// carries "vX.Y.Z" as its main module version, stamped by the go tool.
 // Local builds (go build, go test) report "(devel)". IdemCheck surfaces
 // both without ever hardcoding a version string.
 package buildinfo
@@ -16,7 +16,7 @@ import (
 )
 
 // Version returns this binary's module version without the leading "v"
-// ("0.1.3"), or "devel" when the binary was built from a local checkout
+// ("X.Y.Z"), or "devel" when the binary was built from a local checkout
 // rather than installed at a tagged version.
 func Version() string {
 	info, ok := debug.ReadBuildInfo()
@@ -27,7 +27,7 @@ func Version() string {
 	return fromModuleVersion(info.Main.Version)
 }
 
-// Display renders a version for humans: "v0.1.3" for release binaries,
+// Display renders a version for humans: "vX.Y.Z" for release binaries,
 // "devel" for local development builds.
 func Display() string {
 	return toDisplay(Version())

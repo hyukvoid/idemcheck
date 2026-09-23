@@ -1,8 +1,9 @@
 # Release design
 
-Status: **design only.** Nothing described here is implemented or tagged.
-`v0.1.3` is the latest release; no new tag may be cut until the validation
-suite below is green on the release commit.
+Status: **design only.** The mechanics below are not yet executed.
+`v1.0.0` is the next release candidate for publication after the
+completed release-gate and review-acceptance validation; the tag does
+not exist yet.
 
 ## Goals
 

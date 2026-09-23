@@ -127,7 +127,7 @@ the printed `--key` reproduces the same run.
 ## Install
 
 ```bash
-go install github.com/hyukvoid/idemcheck/cmd/idemcheck@v0.1.3
+go install github.com/hyukvoid/idemcheck/cmd/idemcheck@v1.0.0
 ```
 
 Or always get the newest release:
@@ -137,7 +137,7 @@ go install github.com/hyukvoid/idemcheck/cmd/idemcheck@latest
 ```
 
 Both commands were verified against the public Go module proxy; each
-installs a binary that reports `IdemCheck v0.1.3`.
+installs a binary that reports `IdemCheck v1.0.0`.
 
 Build from source:
 

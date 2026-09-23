@@ -25,4 +25,4 @@ Security vulnerabilities: do NOT open a public issue — see SECURITY.md.
 
 - `idemcheck version`:
 - OS and shell:
-- Install method (`go install ...@v0.1.3`, `@latest`, built from source):
+- Install method (`go install ...@v1.0.0`, `@latest`, built from source):
