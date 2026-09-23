@@ -68,6 +68,11 @@ func diffWalk(a, b any, path string, out *[]string) {
 func jsonEqual(a, b any) bool {
 	// json.Number compares by string; identical normalization guarantees
 	// identical literal formatting for equal values.
+	// Numbers compare in canonical form: 1 and 1.0 are the same value.
+	if na, ok := a.(json.Number); ok {
+		nb, ok := b.(json.Number)
+		return ok && canonicalNumber(na) == canonicalNumber(nb)
+	}
 	if fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b) && fmt.Sprintf("%T", a) == fmt.Sprintf("%T", b) {
 		return true
 	}

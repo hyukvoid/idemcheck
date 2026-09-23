@@ -19,6 +19,7 @@ var defaultIgnoredHeaders = []string{
 	"x-amzn-trace-id",
 	"cf-ray",
 	"server-timing",
+	"set-cookie",
 }
 
 // Options controls semantic fingerprinting.

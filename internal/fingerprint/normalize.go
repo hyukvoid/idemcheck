@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -43,10 +44,16 @@ func Normalize(body []byte, ignorePaths []string) (NormalizedBody, error) {
 		// Body looked like JSON but did not parse: fall back safely.
 		return NormalizedBody{IsJSON: false, Canonical: body}, nil
 	}
+	if dec.More() {
+		// Trailing data after the first value ("{}{}" or "{} garbage"):
+		// not a single JSON document, so compare raw bytes.
+		return NormalizedBody{IsJSON: false, Canonical: body}, nil
+	}
 
 	for _, p := range patterns {
 		applyIgnore(tree, p)
 	}
+	tree = prepare(tree)
 
 	canonical, err := json.Marshal(tree) // map keys are emitted sorted
 	if err != nil {
@@ -173,4 +180,143 @@ func applyIgnore(node any, segs []patternSeg) bool {
 		}
 	}
 	return false
+}
+
+// prepare canonicalizes every node in place: volatile keys are removed and
+// numeric literals are rewritten in one exact decimal form so that 1 and 1.0
+// never look like different responses. It returns the (possibly replaced)
+// node.
+func prepare(node any) any {
+	switch n := node.(type) {
+	case map[string]any:
+		for k, v := range n {
+			if volatileKey(k) {
+				delete(n, k)
+				continue
+			}
+			n[k] = prepare(v)
+		}
+		return n
+	case []any:
+		for i, v := range n {
+			n[i] = prepare(v)
+		}
+		return n
+	case json.Number:
+		return json.Number(canonicalNumber(n))
+	default:
+		return node
+	}
+}
+
+// volatileKeys are JSON key names that routinely change between logically
+// identical responses (clocks, tracing). Matched after lowercasing with
+// "_", "-" and "." removed, at any depth: "request_id", "requestId" and
+// "request-id" are the same key. This is a default; users can add more
+// ignore paths via config, but these always apply.
+var volatileKeys = map[string]bool{
+	"timestamp":     true,
+	"requestid":     true,
+	"traceid":       true,
+	"correlationid": true,
+	"spanid":        true,
+}
+
+func volatileKey(k string) bool {
+	norm := strings.Map(func(r rune) rune {
+		if r == '_' || r == '-' || r == '.' {
+			return -1
+		}
+		return r
+	}, strings.ToLower(k))
+	return volatileKeys[norm]
+}
+
+// maxNumericLiteral caps how large a numeric literal is canonicalized;
+// longer literals are compared byte-for-byte.
+const maxNumericLiteral = 64
+
+// canonicalNumber renders a JSON number literal as one exact plain-decimal
+// form so equal values compare equal regardless of spelling (1, 1.0, 1e0).
+// The rewrite uses integer string arithmetic, which is exact for every JSON
+// literal up to maxNumericLiteral characters.
+func canonicalNumber(n json.Number) string {
+	s := strings.TrimSpace(n.String())
+	if s == "" || len(s) > maxNumericLiteral {
+		return s
+	}
+	if !strings.ContainsAny(s, ".eE") {
+		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return strconv.FormatInt(i, 10)
+		}
+		if u, err := strconv.ParseUint(s, 10, 64); err == nil {
+			return strconv.FormatUint(u, 10)
+		}
+	}
+	mant, expStr := s, ""
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		mant, expStr = s[:i], s[i+1:]
+	}
+	exp := 0
+	if expStr != "" {
+		e, err := strconv.Atoi(expStr)
+		if err != nil || e > 10000 || e < -10000 {
+			return s
+		}
+		exp = e
+	}
+	neg := strings.HasPrefix(mant, "-")
+	if strings.HasPrefix(mant, "-") || strings.HasPrefix(mant, "+") {
+		mant = mant[1:]
+	}
+	intPart, fracPart := mant, ""
+	if i := strings.IndexByte(mant, '.'); i >= 0 {
+		intPart, fracPart = mant[:i], mant[i+1:]
+	}
+	digits := intPart + fracPart
+	if digits == "" {
+		return s // not a well-formed number; compare bytes
+	}
+	for i := 0; i < len(digits); i++ {
+		if digits[i] < '0' || digits[i] > '9' {
+			return s
+		}
+	}
+	// value == int(digits) * 10^(point-len(digits))
+	point := len(intPart) + exp
+	lead := 0
+	for lead < len(digits)-1 && digits[lead] == '0' {
+		lead++
+	}
+	digits, point = digits[lead:], point-lead
+	tail := len(digits)
+	for tail > 1 && digits[tail-1] == '0' {
+		tail--
+	}
+	digits = digits[:tail]
+	if digits == "0" {
+		return "0"
+	}
+	var b strings.Builder
+	if neg {
+		b.WriteByte('-')
+	}
+	switch {
+	case point <= 0:
+		b.WriteString("0.")
+		for i := 0; i < -point; i++ {
+			b.WriteByte('0')
+		}
+		b.WriteString(digits)
+	case point >= len(digits):
+		b.WriteString(digits)
+		for i := len(digits); i < point; i++ {
+			b.WriteByte('0')
+		}
+	default:
+		b.WriteString(digits[:point])
+		b.WriteByte('.')
+		b.WriteString(digits[point:])
+	}
+	return b.String()
 }

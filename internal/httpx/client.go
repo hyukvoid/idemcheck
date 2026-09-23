@@ -5,13 +5,26 @@ package httpx
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// DefaultMaxBodyBytes bounds how much of each response body is read. Bodies
+// larger than the limit are never buffered or fingerprinted; the attempt is
+// reported as oversize so the verdict stays inconclusive instead of guessing
+// from a truncated body.
+const DefaultMaxBodyBytes int64 = 4 << 20 // 4 MiB
+
+// errBodyTooLarge signals a decompressed body that exceeded the read limit.
+var errBodyTooLarge = errors.New("response body exceeds read limit")
 
 // Spec describes the logical request under test. It is immutable; a fresh
 // concrete request is materialized per attempt.
@@ -32,13 +45,19 @@ type Outcome struct {
 	Header      http.Header
 	Latency     time.Duration
 	StartOffset time.Duration // set by the concurrency engine (after barrier)
-	Err         error
+	// Oversize is true when the (decoded) body exceeded the read limit.
+	// Body is then empty and Err explains why. Callers must treat an
+	// oversize attempt as insufficient evidence, never as a comparison
+	// result.
+	Oversize bool
+	Err      error
 }
 
 // Client wraps net/http with per-request timeouts.
 type Client struct {
 	hc      *http.Client
 	timeout time.Duration
+	maxBody int64
 }
 
 // NewClient builds a client. The transport pools connections so a burst of
@@ -59,7 +78,17 @@ func NewClient(timeout time.Duration) *Client {
 			},
 		},
 		timeout: timeout,
+		maxBody: DefaultMaxBodyBytes,
 	}
+}
+
+// SetMaxBody overrides the response body read limit in bytes. Values <= 0
+// restore DefaultMaxBodyBytes.
+func (c *Client) SetMaxBody(n int64) {
+	if n <= 0 {
+		n = DefaultMaxBodyBytes
+	}
+	c.maxBody = n
 }
 
 // BuildRequest materializes a concrete request for one attempt.
@@ -89,11 +118,17 @@ func (s Spec) BuildRequest(ctx context.Context, key string) (*http.Request, erro
 	return req, nil
 }
 
-// Do executes one request and reads the full response body.
+// Do executes one request and reads the full response body (up to the
+// configured limit).
 func (c *Client) Do(ctx context.Context, spec Spec, key string, worker int) Outcome {
 	req, err := spec.BuildRequest(ctx, key)
 	if err != nil {
 		return Outcome{Worker: worker, Err: err}
+	}
+	// Ask for an uncompressed body so fingerprints never depend on content
+	// negotiation; servers that ignore this are decoded best-effort below.
+	if req.Header.Get("Accept-Encoding") == "" {
+		req.Header.Set("Accept-Encoding", "identity")
 	}
 	start := time.Now()
 	resp, err := c.hc.Do(req)
@@ -102,18 +137,118 @@ func (c *Client) Do(ctx context.Context, spec Spec, key string, worker int) Outc
 		return Outcome{Worker: worker, Latency: latency, Err: err}
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return Outcome{Worker: worker, Latency: latency, StatusCode: resp.StatusCode, Err: fmt.Errorf("read body: %w", err)}
+
+	header := resp.Header.Clone()
+	body, oversize, err := readBounded(resp.Body, c.maxBody)
+	switch {
+	case err != nil:
+		return Outcome{Worker: worker, Latency: latency, StatusCode: resp.StatusCode, Header: header,
+			Err: fmt.Errorf("read body: %w", err)}
+	case oversize:
+		return Outcome{Worker: worker, Latency: latency, StatusCode: resp.StatusCode, Header: header, Oversize: true,
+			Err: fmt.Errorf("response body exceeds %d byte limit", c.maxBody)}
+	}
+	if decoded, handled, decOversize := decodeBody(header, body, c.maxBody); handled {
+		if decOversize {
+			return Outcome{Worker: worker, Latency: latency, StatusCode: resp.StatusCode, Header: header, Oversize: true,
+				Err: fmt.Errorf("decoded response body exceeds %d byte limit", c.maxBody)}
+		}
+		body = decoded
+		// The stored bytes are plain now; stale encodings would corrupt
+		// evidence.
+		header.Del("Content-Encoding")
+		header.Del("Content-Length")
 	}
 	return Outcome{
 		Worker:     worker,
 		Resp:       resp,
 		Body:       body,
 		StatusCode: resp.StatusCode,
-		Header:     resp.Header.Clone(),
+		Header:     header,
 		Latency:    latency,
 	}
+}
+
+// readBounded reads at most max bytes from r. It returns oversize=true when
+// more bytes were available, without ever buffering an unbounded response.
+func readBounded(r io.Reader, max int64) ([]byte, bool, error) {
+	if max <= 0 {
+		max = DefaultMaxBodyBytes
+	}
+	// One byte past the limit so "too large" is detectable.
+	b, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(b)) > max {
+		return nil, true, nil
+	}
+	return b, false, nil
+}
+
+// decodeBody decompresses a Content-Encoding'd body. handled=false means the
+// bytes are returned unchanged (identity, unknown encoding, or a decoding
+// error: best effort). oversize=true means the decoded body exceeded max.
+func decodeBody(header http.Header, body []byte, max int64) (out []byte, handled, oversize bool) {
+	enc := strings.ToLower(strings.TrimSpace(header.Get("Content-Encoding")))
+	switch enc {
+	case "", "identity":
+		return body, false, false
+	}
+	decoded, err := decompress(enc, body, max)
+	if errors.Is(err, errBodyTooLarge) {
+		return nil, true, true
+	}
+	if err != nil {
+		return body, false, false
+	}
+	return decoded, true, false
+}
+
+func decompress(enc string, body []byte, max int64) ([]byte, error) {
+	switch enc {
+	case "gzip", "x-gzip":
+		zr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		defer zr.Close()
+		return readDecoded(zr, max)
+	case "deflate":
+		// RFC 1950 (zlib-wrapped) is what most servers send; some send raw
+		// RFC 1951 streams, so fall back.
+		if out, err := func() ([]byte, error) {
+			zr, err := zlib.NewReader(bytes.NewReader(body))
+			if err != nil {
+				return nil, err
+			}
+			defer zr.Close()
+			return readDecoded(zr, max)
+		}(); err == nil {
+			return out, nil
+		} else if errors.Is(err, errBodyTooLarge) {
+			return nil, err
+		}
+		fr := flate.NewReader(bytes.NewReader(body))
+		defer fr.Close()
+		return readDecoded(fr, max)
+	default:
+		return nil, fmt.Errorf("unsupported content-encoding %q", enc)
+	}
+}
+
+func readDecoded(r io.Reader, max int64) ([]byte, error) {
+	if max <= 0 {
+		max = DefaultMaxBodyBytes
+	}
+	out, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(out)) > max {
+		return nil, errBodyTooLarge
+	}
+	return out, nil
 }
 
 // Describe renders a short human-readable form of an error for reports.
