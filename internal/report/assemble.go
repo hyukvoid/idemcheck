@@ -8,6 +8,7 @@ import (
 	"github.com/hyukvoid/idemcheck/internal/config"
 	"github.com/hyukvoid/idemcheck/internal/engine"
 	"github.com/hyukvoid/idemcheck/internal/models"
+	"github.com/hyukvoid/idemcheck/internal/redact"
 )
 
 // AssembleInput carries everything needed to build the final Result.
@@ -29,6 +30,8 @@ func Assemble(in AssembleInput) *models.Result {
 		Target:   in.Target,
 		Warnings: in.Warnings,
 	}
+	// Terminal and JSON render this verbatim: scrub credentials first.
+	res.Target.URL = redact.URL(res.Target.URL)
 
 	for _, r := range in.Results {
 		res.Checks = append(res.Checks, r.ToModel())
@@ -106,12 +109,12 @@ func hasStatus(res *models.Result, s models.CheckStatus) bool {
 func ReproCommand(o config.Options) string {
 	var b strings.Builder
 	b.WriteString("idemcheck test")
-	fmt.Fprintf(&b, " \\\n  --url %s", shellQuote(o.URL))
+	fmt.Fprintf(&b, " \\\n  --url %s", shellQuote(redact.URL(o.URL)))
 	if o.Method != config.DefaultMethod {
 		fmt.Fprintf(&b, " \\\n  --method %s", shellQuote(o.Method))
 	}
 	for _, h := range o.Headers {
-		fmt.Fprintf(&b, " \\\n  -H %s", shellQuote(h))
+		fmt.Fprintf(&b, " \\\n  -H %s", shellQuote(redact.HeaderFlag(h)))
 	}
 	if o.BodyIsFile {
 		fmt.Fprintf(&b, " \\\n  --body-file %s", shellQuote(o.BodySource))

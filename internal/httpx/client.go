@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/hyukvoid/idemcheck/internal/redact"
 )
 
 // DefaultMaxBodyBytes bounds how much of each response body is read. Bodies
@@ -252,11 +254,13 @@ func readDecoded(r io.Reader, max int64) ([]byte, error) {
 }
 
 // Describe renders a short human-readable form of an error for reports.
+// Transport errors quote the request URL (credentials included), so the text
+// is scrubbed first.
 func Describe(err error) string {
 	if err == nil {
 		return ""
 	}
-	msg := err.Error()
+	msg := redact.Text(err.Error())
 	if len(msg) > 200 {
 		msg = msg[:200] + "..."
 	}

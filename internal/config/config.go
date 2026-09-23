@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hyukvoid/idemcheck/internal/redact"
 	"gopkg.in/yaml.v3"
 )
 
@@ -80,13 +81,13 @@ func (o *Options) Validate() error {
 	}
 	u, err := url.Parse(o.URL)
 	if err != nil {
-		return fmt.Errorf("invalid --url: %w", err)
+		return fmt.Errorf("invalid --url: %s", redact.Text(err.Error()))
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("invalid --url %q: scheme must be http or https", o.URL)
+		return fmt.Errorf("invalid --url %q: scheme must be http or https", redact.URL(o.URL))
 	}
 	if u.Host == "" {
-		return fmt.Errorf("invalid --url %q: missing host", o.URL)
+		return fmt.Errorf("invalid --url %q: missing host", redact.URL(o.URL))
 	}
 
 	o.Method = strings.ToUpper(strings.TrimSpace(o.Method))
@@ -135,7 +136,7 @@ func (o *Options) Validate() error {
 func (o *Options) SafetyGuard() (string, error) {
 	u, err := url.Parse(o.URL)
 	if err != nil {
-		return "", fmt.Errorf("invalid --url: %w", err)
+		return "", fmt.Errorf("invalid --url: %s", redact.Text(err.Error()))
 	}
 	host := u.Hostname()
 	if IsLocalHost(host) {
@@ -158,16 +159,25 @@ func IsLocalHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// SplitHeader parses a "Name: value" header flag.
+// SplitHeader parses a "Name: value" header flag. Errors never echo the
+// value: the flag may be a credential the user mistyped.
 func SplitHeader(h string) (name, value string, err error) {
 	i := strings.Index(h, ":")
 	if i < 0 {
-		return "", "", fmt.Errorf("invalid header %q: expected \"Name: value\"", h)
+		// Show only the leading token (the attempted name); anything after
+		// it may be a credential.
+		if j := strings.IndexAny(h, " \t"); j >= 0 {
+			return "", "", fmt.Errorf("invalid header %q: expected \"Name: value\"",
+				h[:j]+" "+redact.Placeholder)
+		}
+		// One ambiguous token: it may be a bare credential rather than a
+		// header name, so hide it entirely.
+		return "", "", fmt.Errorf("invalid header: expected \"Name: value\" (flag hidden: no colon found)")
 	}
 	name = strings.TrimSpace(h[:i])
 	value = strings.TrimSpace(h[i+1:])
 	if name == "" {
-		return "", "", fmt.Errorf("invalid header %q: empty name", h)
+		return "", "", fmt.Errorf("invalid header: empty name (value hidden)")
 	}
 	return name, value, nil
 }
