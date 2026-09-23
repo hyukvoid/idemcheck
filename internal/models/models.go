@@ -11,18 +11,21 @@ const ToolName = "IdemCheck"
 type CheckStatus string
 
 const (
-	StatusPass  CheckStatus = "pass"
-	StatusFail  CheckStatus = "fail"
-	StatusWarn  CheckStatus = "warn"
-	StatusSkip  CheckStatus = "skipped"
-	StatusError CheckStatus = "error"
+	StatusPass         CheckStatus = "pass"
+	StatusFail         CheckStatus = "fail"
+	StatusInconclusive CheckStatus = "inconclusive" // observations insufficient
+	StatusSkip         CheckStatus = "skipped"
+	StatusError        CheckStatus = "error"
 )
 
 // Exit codes. GitHub Actions integration depends on these.
+// Precedence: FAIL (1) > ERROR (2) > INCONCLUSIVE (3) > PASS (0).
+// Uncertainty is never reported as a pass.
 const (
-	ExitPass      = 0 // all checks passed (warnings allowed)
-	ExitViolation = 1 // idempotency violation detected
-	ExitFailure   = 2 // invalid configuration or execution failure
+	ExitPass         = 0 // every check passed
+	ExitViolation    = 1 // idempotency violation detected
+	ExitFailure      = 2 // invalid configuration or execution failure
+	ExitInconclusive = 3 // observations insufficient; no proof either way
 )
 
 // Target identifies the endpoint under test.
@@ -35,12 +38,13 @@ type Target struct {
 
 // Summary is the top-level verdict.
 type Summary struct {
-	Result        string `json:"result"` // PASS | FAILED | ERROR
-	ExitCode      int    `json:"exit_code"`
-	ChecksPassed  int    `json:"checks_passed"`
-	ChecksFailed  int    `json:"checks_failed"`
-	ChecksWarned  int    `json:"checks_warned"`
-	ChecksSkipped int    `json:"checks_skipped"`
+	Result             string `json:"result"` // PASS | FAILED | ERROR | INCONCLUSIVE
+	ExitCode           int    `json:"exit_code"`
+	ChecksPassed       int    `json:"checks_passed"`
+	ChecksFailed       int    `json:"checks_failed"`
+	ChecksInconclusive int    `json:"checks_inconclusive"`
+	ChecksSkipped      int    `json:"checks_skipped"`
+	Policy             string `json:"policy"` // safe-retry | strict-replay
 }
 
 // RequestTiming records one request's position in time relative to the
@@ -61,12 +65,14 @@ type Check struct {
 	Detail          string          `json:"detail,omitempty"`
 	DurationMS      int64           `json:"duration_ms"`
 	Timings         []RequestTiming `json:"timings,omitempty"`
+	Phases          []string        `json:"phases,omitempty"` // BURST | SETTLE | REPLAY
+	Trials          int             `json:"trials,omitempty"`
 }
 
 // Violation records a detected idempotency problem.
 type Violation struct {
 	CheckID         string   `json:"check"`
-	Type            string   `json:"type"` // sequential_mismatch | concurrent_race
+	Type            string   `json:"type"` // sequential_mismatch | concurrent_race | payload_conflict
 	Message         string   `json:"message"`
 	DifferingFields []string `json:"differing_fields,omitempty"`
 }

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Placeholder replaces redacted material everywhere.
@@ -31,12 +32,43 @@ var sensitiveExact = map[string]bool{
 // "api-key"/"api_key"/"apikey" all normalize to "apikey".
 var sensitiveFragments = []string{"apikey", "token", "secret", "password", "key", "session"}
 
+// redact extraHeaders holds per-run header names added by
+// --sensitive-header / config security.sensitive_headers.
+var (
+	extraMu      sync.RWMutex
+	extraHeaders = map[string]bool{}
+)
+
+// SetExtraHeaders registers additional header names to always redact
+// (exact normalized name match). Call once before any output is produced;
+// passing an empty list clears the extras.
+func SetExtraHeaders(names []string) {
+	extraMu.Lock()
+	defer extraMu.Unlock()
+	extraHeaders = map[string]bool{}
+	for _, n := range names {
+		if nn := normalize(n); nn != "" {
+			extraHeaders[nn] = true
+		}
+	}
+}
+
 // IsSensitive reports whether a header or query-parameter name holds
 // credentials. Matching uses the normalized name (lowercased, with "-", "_"
-// and "." removed). Idempotency keys are never sensitive: they are the
+// and "." removed). Explicit extras registered via SetExtraHeaders always
+// win. Idempotency keys are otherwise never sensitive: they are the
 // reproduction signal, not a credential, and must stay visible.
 func IsSensitive(name string) bool {
 	n := normalize(name)
+	if n == "" {
+		return false
+	}
+	extraMu.RLock()
+	extra := extraHeaders[n]
+	extraMu.RUnlock()
+	if extra {
+		return true
+	}
 	if strings.HasPrefix(n, "idempotency") {
 		return false
 	}

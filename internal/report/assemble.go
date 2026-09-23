@@ -44,20 +44,27 @@ func Assemble(in AssembleInput) *models.Result {
 		case models.StatusFail:
 			res.Summary.ChecksFailed++
 			res.Violations = append(res.Violations, violationFor(r))
-		case models.StatusWarn:
-			res.Summary.ChecksWarned++
+		case models.StatusInconclusive:
+			res.Summary.ChecksInconclusive++
 		case models.StatusSkip:
 			res.Summary.ChecksSkipped++
 		}
 	}
 
-	// An execution error outranks a pass but does not erase observed
-	// violations: if we already proved a race, exit 1 is more useful.
+	res.Summary.Policy = in.Options.Policy
+	if res.Summary.Policy == "" {
+		res.Summary.Policy = config.DefaultPolicyProfile
+	}
+
+	// Precedence: a proven violation outranks an execution error, which
+	// outranks insufficient observations. Uncertainty is never a pass.
 	switch {
 	case hasStatus(res, models.StatusFail):
 		res.Summary.Result, res.Summary.ExitCode = "FAILED", models.ExitViolation
 	case hasStatus(res, models.StatusError):
 		res.Summary.Result, res.Summary.ExitCode = "ERROR", models.ExitFailure
+	case hasStatus(res, models.StatusInconclusive):
+		res.Summary.Result, res.Summary.ExitCode = "INCONCLUSIVE", models.ExitInconclusive
 	default:
 		res.Summary.Result, res.Summary.ExitCode = "PASS", models.ExitPass
 	}
@@ -83,14 +90,22 @@ func violationFor(r engine.CheckResult) models.Violation {
 		CheckID:         r.ID,
 		DifferingFields: r.DifferingFields,
 	}
-	if r.ID == engine.ScConcurrent {
+	logical := r.Logical
+	if logical == 0 {
+		logical = r.Unique
+	}
+	switch r.ID {
+	case engine.ScConcurrent:
 		v.Type = "concurrent_race"
-		v.Message = fmt.Sprintf("%d concurrent requests\n1 idempotency key\n%d unique semantic responses",
-			r.Requests, r.Unique)
-	} else {
+		v.Message = fmt.Sprintf("%d concurrent requests\n1 idempotency key\n%d distinct logical results",
+			r.Requests, logical)
+	case engine.ScPayload:
+		v.Type = "payload_conflict"
+		v.Message = fmt.Sprintf("same idempotency key accepted for two different payloads: the modified payload returned a distinct logical result")
+	default:
 		v.Type = "sequential_mismatch"
-		v.Message = fmt.Sprintf("%d sequential requests with the same key produced %d unique semantic responses",
-			r.Requests, r.Unique)
+		v.Message = fmt.Sprintf("%d sequential requests with the same key produced %d distinct logical results",
+			r.Requests, logical)
 	}
 	return v
 }

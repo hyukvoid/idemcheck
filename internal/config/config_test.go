@@ -153,10 +153,11 @@ func TestLoadConfigFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ij, ih, err := LoadConfigFile(path)
+	fc, err := LoadConfigFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ij, ih := fc.Response.IgnoreJSON, fc.Response.IgnoreHeaders
 	if len(ij) != 2 || ij[0] != "$.request_id" || ij[1] != "$.meta.trace_id" {
 		t.Fatalf("ignore_json = %v", ij)
 	}
@@ -171,7 +172,7 @@ func TestLoadConfigFileBadYAML(t *testing.T) {
 	if err := os.WriteFile(path, []byte("response: [\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := LoadConfigFile(path); err == nil {
+	if _, err := LoadConfigFile(path); err == nil {
 		t.Fatal("expected parse error")
 	}
 }

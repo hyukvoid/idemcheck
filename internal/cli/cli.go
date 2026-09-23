@@ -19,6 +19,7 @@ import (
 	"github.com/hyukvoid/idemcheck/internal/fingerprint"
 	"github.com/hyukvoid/idemcheck/internal/httpx"
 	"github.com/hyukvoid/idemcheck/internal/models"
+	"github.com/hyukvoid/idemcheck/internal/redact"
 	"github.com/hyukvoid/idemcheck/internal/report"
 )
 
@@ -97,6 +98,10 @@ func newTestCmd(exitCode *int) *cobra.Command {
 		ignoreHdr   []string
 		maxConc     int
 		maxRepeat   int
+		policy      string
+		transient   []int
+		maxBody     int64
+		sensitive   []string
 	)
 
 	cmd := &cobra.Command{
@@ -104,37 +109,55 @@ func newTestCmd(exitCode *int) *cobra.Command {
 		Short: "Test an endpoint for idempotency violations",
 		Long: `IdemCheck sends sequential and concurrent duplicate requests sharing one
 Idempotency-Key and reports whether the endpoint produces more than one
-semantic response — the signature of an idempotency race condition.`,
+logical result — the signature of an idempotency race condition.
+
+Every check reports PASS, FAIL, or INCONCLUSIVE (observations were
+insufficient; never silently treated as a pass).
+
+Exit codes: 0 pass, 1 violation, 2 config/execution error, 3 inconclusive.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts := &config.Options{
-				URL:            url,
-				Method:         method,
-				Headers:        headers,
-				KeyHeader:      keyHeader,
-				Key:            key,
-				Concurrency:    concurrency,
-				Repeat:         repeat,
-				Format:         format,
-				AllowRemote:    allowRemote,
-				Timeout:        timeout,
-				Verbose:        verbose,
-				IgnoreJSON:     ignoreJSON,
-				IgnoreHeader:   ignoreHdr,
-				MaxConcurrency: maxConc,
-				MaxRepeat:      maxRepeat,
+				URL:               url,
+				Method:            method,
+				Headers:           headers,
+				KeyHeader:         keyHeader,
+				Key:               key,
+				Concurrency:       concurrency,
+				Repeat:            repeat,
+				Format:            format,
+				AllowRemote:       allowRemote,
+				Timeout:           timeout,
+				Verbose:           verbose,
+				IgnoreJSON:        ignoreJSON,
+				IgnoreHeader:      ignoreHdr,
+				MaxConcurrency:    maxConc,
+				MaxRepeat:         maxRepeat,
+				Policy:            policy,
+				TransientStatuses: transient,
+				SensitiveHeaders:  sensitive,
+				MaxBodyBytes:      maxBody,
 			}
 
-			// YAML config provides defaults; flags append on top so explicit
-			// CLI input always wins by inclusion.
+			// YAML config provides defaults; flags win: ignore lists append,
+			// --policy/--transient-status replace their config values.
 			if configPath != "" {
-				fj, fh, err := config.LoadConfigFile(configPath)
+				fc, err := config.LoadConfigFile(configPath)
 				if err != nil {
 					return fail(err)
 				}
-				opts.IgnoreJSON = append(fj, opts.IgnoreJSON...)
-				opts.IgnoreHeader = append(fh, opts.IgnoreHeader...)
+				opts.IgnoreJSON = append(fc.Response.IgnoreJSON, opts.IgnoreJSON...)
+				opts.IgnoreHeader = append(fc.Response.IgnoreHeaders, opts.IgnoreHeader...)
+				if opts.Policy == "" {
+					opts.Policy = fc.Policy.Profile
+				}
+				if !cmd.Flags().Changed("transient-status") {
+					opts.TransientStatuses = fc.Policy.TransientStatuses
+				}
+				opts.SensitiveHeaders = append(opts.SensitiveHeaders, fc.Security.SensitiveHeaders...)
 			}
+			// Extra redactions apply to every output path.
+			redact.SetExtraHeaders(opts.SensitiveHeaders)
 
 			switch {
 			case body != "" && bodyFile != "":
@@ -189,6 +212,10 @@ semantic response — the signature of an idempotency race condition.`,
 	f.StringArrayVar(&ignoreHdr, "ignore-header", nil, "header name to ignore, repeatable (e.g. x-custom-trace)")
 	f.IntVar(&maxConc, "max-concurrency", config.DefaultMaxConcurrency, "safety ceiling for --concurrency")
 	f.IntVar(&maxRepeat, "max-repeat", config.DefaultRepeat*10, "safety ceiling for --repeat")
+	f.StringVar(&policy, "policy", "", "verdict policy: safe-retry (default) or strict-replay (from config when empty)")
+	f.IntSliceVar(&transient, "transient-status", nil, "HTTP statuses treated as acceptable transients, e.g. 409,429 (overrides --policy default and config)")
+	f.Int64Var(&maxBody, "max-body-bytes", httpx.DefaultMaxBodyBytes, "per-response body read limit; larger bodies make the check inconclusive")
+	f.StringArrayVar(&sensitive, "sensitive-header", nil, "extra header name to redact from all output (repeatable)")
 
 	return cmd
 }
@@ -217,6 +244,11 @@ func runTest(cmd *cobra.Command, opts *config.Options, warnings []string, exitCo
 	defer stop()
 
 	client := httpx.NewClient(opts.Timeout)
+	client.SetMaxBody(opts.MaxBodyBytes)
+	pol, err := config.ResolvePolicy(opts.Policy, opts.TransientStatuses)
+	if err != nil {
+		return fail(err)
+	}
 	runner := &engine.Runner{
 		Client:      client,
 		Spec:        spec,
@@ -224,6 +256,7 @@ func runTest(cmd *cobra.Command, opts *config.Options, warnings []string, exitCo
 		BaseKey:     opts.Key,
 		Repeat:      opts.Repeat,
 		Concurrency: opts.Concurrency,
+		Policy:      pol,
 	}
 
 	results, err := runner.Run(ctx)

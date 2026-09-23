@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/hyukvoid/idemcheck/internal/config"
@@ -21,7 +23,7 @@ const (
 	ScDistinct   = "distinct"
 )
 
-// Runner executes the full v0.1 check matrix against one target.
+// Runner executes the full check matrix against one target.
 type Runner struct {
 	Client      *httpx.Client
 	Spec        httpx.Spec
@@ -29,6 +31,8 @@ type Runner struct {
 	BaseKey     string // caller-provided or generated; never sent as-is
 	Repeat      int
 	Concurrency int
+	// Policy decides verdict semantics (default safe-retry when unset).
+	Policy config.Policy
 	// OnCheck is invoked after each check completes (live terminal output).
 	OnCheck func(CheckResult)
 }
@@ -37,6 +41,7 @@ type Runner struct {
 // baseline request is rejected (>=400): that indicates a misconfigured test,
 // not an idempotency verdict, and further requests would be wasted noise.
 func (r *Runner) Run(ctx context.Context) ([]CheckResult, error) {
+	pol := r.Policy.WithDefaults()
 	var results []CheckResult
 	emit := func(res CheckResult) {
 		if r.OnCheck != nil {
@@ -51,7 +56,7 @@ func (r *Runner) Run(ctx context.Context) ([]CheckResult, error) {
 		return nil, err
 	}
 	seq2.ID, seq2.Name = ScSeq2, "Sequential retry ×2"
-	evalDuplicate(seq2)
+	evaluateSameKey(seq2, pol)
 
 	// A rejected baseline means the test itself is misconfigured; report it
 	// as an execution failure rather than a misleading pass, and skip the
@@ -84,7 +89,7 @@ func (r *Runner) Run(ctx context.Context) ([]CheckResult, error) {
 			return results, err
 		}
 		seqN.ID, seqN.Name = ScSeqN, fmt.Sprintf("Sequential retry ×%d", r.Repeat)
-		evalDuplicate(seqN)
+		evaluateSameKey(seqN, pol)
 		emit(*seqN)
 	} else {
 		emit(CheckResult{
@@ -99,7 +104,7 @@ func (r *Runner) Run(ctx context.Context) ([]CheckResult, error) {
 		return results, err
 	}
 	conc.ID, conc.Name = ScConcurrent, fmt.Sprintf("Concurrent retry ×%d", r.Concurrency)
-	evalDuplicate(conc)
+	evaluateSameKey(conc, pol)
 	emit(*conc)
 
 	// Check 4: same key + modified payload (classified, never assumed).
@@ -119,36 +124,95 @@ func (r *Runner) Run(ctx context.Context) ([]CheckResult, error) {
 	return results, nil
 }
 
-// evalDuplicate assigns pass/fail/error to a same-key check: identical
-// semantic responses pass; more than one distinct response is a violation.
-func evalDuplicate(res *CheckResult) {
-	if res.Observed == 0 {
-		res.Status = models.StatusError
-		res.Detail = "no responses received: " + res.FirstError
-		return
+// evaluateSameKey assigns a verdict to a same-key check under the active
+// policy. Verdict identity is the normalized response BODY of 2xx results:
+// status class (201 vs 200) and headers collapse — they stay in the
+// fingerprint evidence only. Rules, in order:
+//
+//  1. nothing observed -> ERROR (execution failure)
+//  2. two or more distinct success bodies -> FAIL (concrete divergence)
+//  3. oversize / transport / unknown statuses -> INCONCLUSIVE (partial evidence)
+//  4. only transients, or transients alongside one success -> INCONCLUSIVE
+//     (the REPLAY phase that confirms transient-tolerated convergence lands
+//     with the phase machinery; until then these never report PASS)
+//  5. exactly one success body, nothing else -> PASS
+//
+// Uncertainty is never turned into a pass.
+func evaluateSameKey(res *CheckResult, pol config.Policy) {
+	successBodies := map[string]bool{}
+	transient, unknown := 0, 0
+	unknownStatuses := map[int]bool{}
+	for _, g := range res.Groups {
+		st := g.Fingerprint.Status
+		switch {
+		case st >= 200 && st < 300:
+			successBodies[string(g.Fingerprint.Body.Canonical)] = true
+		case pol.IsTransient(st):
+			transient += g.Count
+		default:
+			unknown += g.Count
+			unknownStatuses[st] = true
+		}
 	}
-	detail := fmt.Sprintf("%d unique semantic responses observed", res.Unique)
-	failed := res.Requests - res.Observed
-	if failed > 0 {
-		detail += fmt.Sprintf("; %d/%d requests failed: %s", failed, res.Requests, res.FirstError)
-	}
-	res.Detail = detail
+	res.Logical = len(successBodies)
 
 	switch {
-	case res.Unique > 1:
+	case res.Observed == 0:
+		res.Status = models.StatusError
+		res.Detail = "no responses received: " + res.FirstError
+
+	case len(successBodies) >= 2:
 		res.Status = models.StatusFail
-	case failed > 0:
-		// All observed responses matched, but some requests never completed:
-		// inconclusive rather than a clean pass.
-		res.Status = models.StatusWarn
+		res.Detail = fmt.Sprintf("%d distinct logical results for one idempotency key: response bodies diverge", len(successBodies))
+
+	case res.Oversize > 0:
+		res.Status = models.StatusInconclusive
+		res.Detail = fmt.Sprintf("%d of %d response bodies exceeded the read limit; bodies not compared (--max-body-bytes)",
+			res.Oversize, res.Requests)
+
+	case res.Transport > 0:
+		res.Status = models.StatusInconclusive
+		res.Detail = fmt.Sprintf("%d/%d requests failed before a verdict: %s", res.Transport, res.Requests, res.FirstError)
+
+	case unknown > 0:
+		statuses := make([]int, 0, len(unknownStatuses))
+		for s := range unknownStatuses {
+			statuses = append(statuses, s)
+		}
+		sort.Ints(statuses)
+		res.Status = models.StatusInconclusive
+		res.Detail = fmt.Sprintf("unhandled HTTP status %v outside policy %s; cannot classify", statuses, pol.Profile)
+
+	case len(successBodies) == 0:
+		// Transients only (policy accepted them, but nothing to compare).
+		res.Status = models.StatusInconclusive
+		res.Detail = fmt.Sprintf("%d transient response(s) under policy %s; no logical result to compare", transient, pol.Profile)
+
+	case transient > 0:
+		// One logical result plus policy-acceptable transients: pending
+		// replay confirmation -> inconclusive, not a pass.
+		res.Status = models.StatusInconclusive
+		res.Detail = fmt.Sprintf("1 logical result observed but %d transient response(s) under policy %s need replay confirmation",
+			transient, pol.Profile)
+
 	default:
+		// Exactly one logical result; every observed response was a 2xx
+		// carrying that body.
 		res.Status = models.StatusPass
+		res.Detail = fmt.Sprintf("%d requests converged on 1 logical result", res.Observed)
 	}
 }
 
 // runPayloadConflict sends the original payload, then a modified payload,
-// under the SAME key, and classifies the endpoint's behavior without
-// imposing any universal HTTP contract (APIs differ by design).
+// under the SAME key, and classifies the endpoint's behavior as one of four
+// outcomes without imposing any universal HTTP contract (APIs differ by
+// design):
+//
+//	rejected          -> modified payload answered 4xx (except timeout-ish
+//	                     408/425/429)            -> PASS
+//	accepted-same     -> 2xx with the same logical result     -> PASS
+//	accepted-different-> 2xx with a different logical result  -> FAIL
+//	inconclusive      -> transient/unknown/transport outcomes -> INCONCLUSIVE
 func (r *Runner) runPayloadConflict(ctx context.Context) (*CheckResult, error) {
 	res := &CheckResult{
 		ID: ScPayload, Name: "Same key + changed payload",
@@ -180,7 +244,7 @@ func (r *Runner) runPayloadConflict(ctx context.Context) (*CheckResult, error) {
 	}
 	if ocA.Err != nil || ocB.Err != nil {
 		res.Observed = countObserved(outcomes)
-		res.Status = models.StatusError
+		res.Status = models.StatusInconclusive
 		res.Detail = "request failed: " + res.FirstError
 		return res, nil
 	}
@@ -203,20 +267,51 @@ func (r *Runner) runPayloadConflict(ctx context.Context) (*CheckResult, error) {
 	}
 	analyzeEvidence(res)
 
+	sameBody := bytes.Equal(fpA.Body.Canonical, fpB.Body.Canonical)
 	switch {
-	case ocB.StatusCode >= 400 && ocA.StatusCode < 400:
+	case ocA.StatusCode < 200 || ocA.StatusCode >= 300:
+		res.Status = models.StatusInconclusive
+		res.Detail = fmt.Sprintf("original request returned HTTP %d; payload conflict not evaluable", ocA.StatusCode)
+
+	case isRejectionStatus(ocB.StatusCode):
 		res.Status = models.StatusPass
 		res.Detail = fmt.Sprintf("payload conflict rejected: original HTTP %d, modified payload HTTP %d (%s)",
 			ocA.StatusCode, ocB.StatusCode, marker)
-	case fpA.Value == fpB.Value:
+
+	case ocB.StatusCode >= 200 && ocB.StatusCode < 300 && sameBody:
+		res.Logical = 1
 		res.Status = models.StatusPass
-		res.Detail = fmt.Sprintf("modified payload (%s) replayed the original response (HTTP %d)", marker, ocA.StatusCode)
+		res.Detail = fmt.Sprintf("modified payload (%s) replayed the original logical result (HTTP %d -> %d)",
+			marker, ocA.StatusCode, ocB.StatusCode)
+
+	case ocB.StatusCode >= 200 && ocB.StatusCode < 300:
+		res.Logical = 2
+		res.Status = models.StatusFail
+		res.Detail = fmt.Sprintf("same idempotency key accepted for different payloads: original HTTP %d and modified payload HTTP %d returned different logical results (%s)",
+			ocA.StatusCode, ocB.StatusCode, marker)
+
 	default:
-		res.Status = models.StatusWarn
-		res.Detail = fmt.Sprintf("same idempotency key accepted for different payloads: original HTTP %d, modified payload HTTP %d produced a different response",
-			ocA.StatusCode, ocB.StatusCode)
+		// 1xx/3xx/408/425/429/5xx: cannot classify the contract.
+		res.Status = models.StatusInconclusive
+		res.Detail = fmt.Sprintf("modified payload returned HTTP %d (transient or unhandled); payload conflict not evaluable",
+			ocB.StatusCode)
 	}
 	return res, nil
+}
+
+// isRejectionStatus reports whether B's status is a 4xx rejection of the
+// modified payload. 408 (timeout), 425 (too early) and 429 (rate limit)
+// are transport-ish conditions, not payload-conflict answers; 409 Conflict
+// is the classic rejection and counts.
+func isRejectionStatus(status int) bool {
+	if status < 400 || status > 499 {
+		return false
+	}
+	switch status {
+	case 408, 425, 429:
+		return false
+	}
+	return true
 }
 
 // runDistinctKeys is the control: two requests, different keys, same payload.
@@ -271,8 +366,10 @@ func (r *Runner) runDistinctKeys(ctx context.Context) (*CheckResult, error) {
 		res.Status = models.StatusPass
 		res.Detail = "endpoint treats different keys as distinct requests: 2 unique semantic responses"
 	} else {
-		res.Status = models.StatusWarn
-		res.Detail = "identical responses for different keys: either the endpoint deduplicates by payload, or responses contain no distinguishing field"
+		// Constant responses make races invisible: this run cannot prove
+		// idempotency either way, so it must not report a pass.
+		res.Status = models.StatusInconclusive
+		res.Detail = "identical responses for different keys: either the endpoint deduplicates by payload, or responses contain no distinguishing field — a race could not be observed from this run"
 	}
 	return res, nil
 }

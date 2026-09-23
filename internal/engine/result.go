@@ -24,12 +24,22 @@ type CheckResult struct {
 	Status models.CheckStatus
 	// Requests is how many requests were attempted.
 	Requests int
-	// Observed is how many completed with a response.
+	// Observed is how many completed with a response (including bodies
+	// that exceeded the read limit).
 	Observed int
+	// Transport counts attempts that never produced a response.
+	Transport int
+	// Oversize counts responses whose bodies exceeded the read limit:
+	// observed, but not comparable.
+	Oversize int
 	// BaselineStatus is the status of the first observed response.
 	BaselineStatus int
-	// Unique is how many distinct semantic responses were observed.
-	Unique   int
+	// Unique is how many distinct response fingerprints (status + body +
+	// filtered headers) were observed — the evidence display.
+	Unique int
+	// Logical is how many distinct success BODY results were observed —
+	// the verdict identity (set by the evaluator).
+	Logical  int
 	Detail   string
 	Duration time.Duration
 	// Groups is sorted: highest count first, fingerprint as tie-break.
@@ -54,31 +64,42 @@ func collect(outcomes []httpx.Outcome, fpOpts fingerprint.Options) (*CheckResult
 
 	for _, oc := range outcomes {
 		res.Requests++
-		if oc.Err != nil {
+		switch {
+		case oc.Oversize:
+			// Status observed, body not read: counts as observed so the
+			// evaluator can report it as insufficient evidence rather than
+			// a transport failure.
+			res.Observed++
+			res.Oversize++
+			if res.BaselineStatus == 0 {
+				res.BaselineStatus = oc.StatusCode
+			}
+		case oc.Err != nil:
+			res.Transport++
 			if res.FirstError == "" {
 				res.FirstError = httpx.Describe(oc.Err)
 			}
-			continue
+		default:
+			res.Observed++
+			if res.BaselineStatus == 0 {
+				res.BaselineStatus = oc.StatusCode
+			}
+			fp, err := fingerprint.Compute(&fingerprint.Response{
+				StatusCode: oc.StatusCode,
+				Header:     oc.Header,
+				Body:       oc.Body,
+			}, fpOpts)
+			if err != nil {
+				return nil, err
+			}
+			g, ok := byFP[fp.Value]
+			if !ok {
+				g = &Group{Fingerprint: fp}
+				byFP[fp.Value] = g
+				order = append(order, fp.Value)
+			}
+			g.Count++
 		}
-		res.Observed++
-		if res.BaselineStatus == 0 {
-			res.BaselineStatus = oc.StatusCode
-		}
-		fp, err := fingerprint.Compute(&fingerprint.Response{
-			StatusCode: oc.StatusCode,
-			Header:     oc.Header,
-			Body:       oc.Body,
-		}, fpOpts)
-		if err != nil {
-			return nil, err
-		}
-		g, ok := byFP[fp.Value]
-		if !ok {
-			g = &Group{Fingerprint: fp}
-			byFP[fp.Value] = g
-			order = append(order, fp.Value)
-		}
-		g.Count++
 	}
 
 	res.Unique = len(byFP)

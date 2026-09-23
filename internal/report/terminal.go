@@ -39,7 +39,22 @@ func Terminal(w io.Writer, res *models.Result) {
 	}
 
 	fmt.Fprintf(w, "\n%s\n\n", strings.Repeat("─", ruleWidth))
-	fmt.Fprintf(w, "Result:\n%s\n", res.Summary.Result)
+	fmt.Fprintf(w, "Result:\n%s\n", resultLabel(res.Summary))
+}
+
+// resultLabel is the terminal rendering of the top-level verdict. JSON keeps
+// the stable string form (summary.result), including "FAILED" for exit 1.
+func resultLabel(s models.Summary) string {
+	switch s.ExitCode {
+	case models.ExitViolation:
+		return "FAIL"
+	case models.ExitFailure:
+		return "ERROR"
+	case models.ExitInconclusive:
+		return "INCONCLUSIVE"
+	default:
+		return "PASS"
+	}
 }
 
 // renderCheckLine prints "Name ...... STATUS" with names padded to a column.
@@ -51,8 +66,9 @@ func renderCheckLine(w io.Writer, c models.Check) {
 		dots = 1
 	}
 	fmt.Fprintf(w, "%s %s %s\n", name, strings.Repeat(".", dots), statusLabel(c.Status))
-	// WARN/ERROR/SKIP lines usually carry a short reason worth showing.
-	if (c.Status == models.StatusWarn || c.Status == models.StatusSkip ||
+	// INCONCLUSIVE/SKIP/ERROR lines carry the reason they stopped short of
+	// a verdict; FAIL details render with the violation evidence below.
+	if (c.Status == models.StatusInconclusive || c.Status == models.StatusSkip ||
 		c.Status == models.StatusError) && c.Detail != "" {
 		fmt.Fprintf(w, "  %s\n", c.Detail)
 	}
@@ -64,8 +80,8 @@ func statusLabel(s models.CheckStatus) string {
 		return "PASS"
 	case models.StatusFail:
 		return "FAIL"
-	case models.StatusWarn:
-		return "WARN"
+	case models.StatusInconclusive:
+		return "INCONCLUSIVE"
 	case models.StatusSkip:
 		return "SKIP"
 	case models.StatusError:

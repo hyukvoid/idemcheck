@@ -49,29 +49,47 @@ type Options struct {
 	IgnoreJSON   []string
 	IgnoreHeader []string
 
+	// Policy selects verdict semantics: safe-retry (default) or
+	// strict-replay. TransientStatuses overrides the profile's default
+	// transient set when non-nil.
+	Policy            string
+	TransientStatuses []int
+	// SensitiveHeaders are extra header names to redact from all output.
+	SensitiveHeaders []string
+	// MaxBodyBytes bounds response reads; 0 means the httpx default
+	// (4 MiB). Negative values are rejected.
+	MaxBodyBytes int64
+
 	MaxConcurrency int
 	MaxRepeat      int
 }
 
-// fileConfig mirrors the YAML config file.
-type fileConfig struct {
+// FileConfig is the parsed YAML configuration file.
+type FileConfig struct {
 	Response struct {
 		IgnoreJSON    []string `yaml:"ignore_json"`
 		IgnoreHeaders []string `yaml:"ignore_headers"`
 	} `yaml:"response"`
+	Policy struct {
+		Profile           string `yaml:"profile"`
+		TransientStatuses []int  `yaml:"transient_statuses"`
+	} `yaml:"policy"`
+	Security struct {
+		SensitiveHeaders []string `yaml:"sensitive_headers"`
+	} `yaml:"security"`
 }
 
-// LoadConfigFile reads an optional YAML config and returns its ignore lists.
-func LoadConfigFile(path string) (ignoreJSON, ignoreHeaders []string, err error) {
+// LoadConfigFile reads an optional YAML config file.
+func LoadConfigFile(path string) (FileConfig, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read config %s: %w", path, err)
+		return FileConfig{}, fmt.Errorf("read config %s: %w", path, err)
 	}
-	var fc fileConfig
+	var fc FileConfig
 	if err := yaml.Unmarshal(raw, &fc); err != nil {
-		return nil, nil, fmt.Errorf("parse config %s: %w", path, err)
+		return FileConfig{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	return fc.Response.IgnoreJSON, fc.Response.IgnoreHeaders, nil
+	return fc, nil
 }
 
 // Validate checks options for internal consistency. Errors map to exit code 2.
@@ -116,6 +134,13 @@ func (o *Options) Validate() error {
 
 	if o.Timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
+	}
+
+	if _, err := ResolvePolicy(o.Policy, o.TransientStatuses); err != nil {
+		return err
+	}
+	if o.MaxBodyBytes < 0 {
+		return fmt.Errorf("--max-body-bytes must not be negative (got %d)", o.MaxBodyBytes)
 	}
 
 	for _, h := range o.Headers {
