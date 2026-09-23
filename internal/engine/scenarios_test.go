@@ -225,6 +225,32 @@ func TestDistinctKeysControlPass(t *testing.T) {
 	}
 }
 
+// Control: bodies beyond --max-body-bytes are observed but not readable,
+// so the check cannot decide — INCONCLUSIVE like every other check, never
+// an execution failure. Regression: this path used to report ERROR and
+// flip the whole run from the documented exit 3 to exit 2.
+func TestDistinctKeysControlOversizeInconclusive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"order_id":401,"pad":"%s"}`, strings.Repeat("a", 4096))
+	}))
+	defer srv.Close()
+
+	r := newRunner(srv.URL, `{"item_id":42}`)
+	r.Client.SetMaxBody(64)
+	res, err := r.runDistinctKeys(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != models.StatusInconclusive {
+		t.Fatalf("oversize control responses must be INCONCLUSIVE, got %s (%s)", res.Status, res.Detail)
+	}
+	if !strings.Contains(res.Detail, "exceeded the read limit") {
+		t.Errorf("detail must name the read limit: %s", res.Detail)
+	}
+}
+
 // Control: constant responses make races invisible — the run must not
 // report a pass on that basis (was WARN -> PASS aggregation).
 func TestDistinctKeysControlIdenticalInconclusive(t *testing.T) {
@@ -242,5 +268,42 @@ func TestDistinctKeysControlIdenticalInconclusive(t *testing.T) {
 	}
 	if res.Status != models.StatusInconclusive {
 		t.Fatalf("identical control responses must be INCONCLUSIVE, got %s (%s)", res.Status, res.Detail)
+	}
+}
+
+// Regression: an oversize body (--max-body-bytes) is insufficient evidence
+// in the control check, matching every other check and the documented exit
+// contract (help: "larger bodies make the check inconclusive"). The control
+// used to report ERROR here while the payload check said INCONCLUSIVE for
+// the same observations, turning an inconclusive run (exit 3) into an
+// execution error (exit 2).
+func TestDistinctKeysOversizeIsInconclusive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"order_id":"ord_gate","pad":%q}`, strings.Repeat("x", 200))
+	}))
+	defer srv.Close()
+
+	r := newRunner(srv.URL, `{"item_id":42}`)
+	r.Client.SetMaxBody(50)
+
+	distinct, err := r.runDistinctKeys(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if distinct.Status != models.StatusInconclusive {
+		t.Fatalf("oversize control must be INCONCLUSIVE, got %s (%s)", distinct.Status, distinct.Detail)
+	}
+	if !strings.Contains(distinct.Detail, "--max-body-bytes") {
+		t.Errorf("detail must name the responsible flag: %s", distinct.Detail)
+	}
+
+	// The payload check must classify the same observation the same way.
+	payload, err := r.runPayloadConflict(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Status != models.StatusInconclusive {
+		t.Fatalf("oversize payload must be INCONCLUSIVE, got %s (%s)", payload.Status, payload.Detail)
 	}
 }

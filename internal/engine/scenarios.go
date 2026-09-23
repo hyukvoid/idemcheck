@@ -407,6 +407,22 @@ func (r *Runner) runDistinctKeys(ctx context.Context) (*CheckResult, error) {
 		}
 	}
 	res.Observed = countObserved(outcomes)
+	// A status with an unreadable (oversize) body is insufficient evidence,
+	// exactly like every other check reports --max-body-bytes: INCONCLUSIVE,
+	// never an execution error. Only true transport failures below are errors.
+	if ocA.Oversize || ocB.Oversize {
+		n := 0
+		if ocA.Oversize {
+			n++
+		}
+		if ocB.Oversize {
+			n++
+		}
+		res.Oversize = n
+		res.Status = models.StatusInconclusive
+		res.Detail = fmt.Sprintf("%d of 2 response bodies exceeded the read limit; bodies not compared (--max-body-bytes)", n)
+		return res, nil
+	}
 	if res.Observed < 2 {
 		res.Status = models.StatusError
 		res.Detail = "request failed: " + res.FirstError
