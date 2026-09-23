@@ -35,8 +35,9 @@ FAIL
 > that hidden side effects such as database writes, message publishes,
 > emails, or payment captures happened exactly once.
 
-Built for third-party, partner, and vendor APIs whose internals you cannot
-inspect. It also serves as an external contract check on your own services.
+Built for APIs you're authorized to test, including third-party, partner, and
+vendor APIs whose internals you cannot inspect. It also serves as an external
+contract check on your own services.
 
 ## The bug it catches
 
@@ -93,6 +94,17 @@ reports `IdemCheck v1.0.0`.
 Prebuilt binaries for Windows, Linux, and macOS are available on the
 [Releases](https://github.com/hyukvoid/idemcheck/releases) page (amd64 and
 arm64, with `SHA256SUMS`).
+
+Test an API you're authorized to use:
+```bash
+idemcheck test \
+  --url https://staging.example.com/orders \
+  --body-file request.json \
+  -H "Authorization: Bearer $TOKEN" \
+  --allow-remote
+```
+
+Use `--allow-remote` only on environments you're authorized to test.
 
 ## Quick start
 
@@ -274,6 +286,9 @@ machine contract stays exact. `summary.result` in JSON is one of `PASS`,
 `FAILED`, `ERROR`, `INCONCLUSIVE` and always matches the exit code.
 
 ## Why not curl / k6 / hey / vegeta?
+
+Traffic generators send requests. IdemCheck decides whether same-key retries\
+converged on one observable result.
 
 Those tools are good at sending traffic and measuring it. None of them asks
 the idempotency question: do duplicate requests sharing one key still
