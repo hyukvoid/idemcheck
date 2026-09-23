@@ -264,9 +264,7 @@ func runTest(cmd *cobra.Command, opts *config.Options, warnings []string, exitCo
 		}
 		defer fp.Close()
 		spec.URL = fp.URL()
-		warnings = append(warnings, fmt.Sprintf(
-			"FAULT %s: local proxy %s forwards every request to %s and drops the first completed response (the request is still processed upstream)",
-			opts.Fault, fp.URL(), redact.URL(opts.URL)))
+		warnings = append(warnings, faultWarning(opts.Fault, fp.URL(), opts.URL))
 	}
 
 	// Ctrl-C cancels the barrier and in-flight requests cleanly.
@@ -323,6 +321,17 @@ func runTest(cmd *cobra.Command, opts *config.Options, warnings []string, exitCo
 		}
 	}
 	return nil
+}
+
+// faultWarning renders the loud warning printed when deterministic fault
+// injection wraps the target. Both URLs pass through redact.URL: the proxy
+// URL inherits the target's query string verbatim, which may carry
+// credentials, and this warning lands in terminal output, JSON warnings,
+// and CI logs alike.
+func faultWarning(mode, proxyURL, targetURL string) string {
+	return fmt.Sprintf(
+		"FAULT %s: local proxy %s forwards every request to %s and drops the first completed response (the request is still processed upstream)",
+		mode, redact.URL(proxyURL), redact.URL(targetURL))
 }
 
 // renderTimings prints per-request timing so users can verify the burst was
