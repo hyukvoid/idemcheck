@@ -24,6 +24,16 @@ const (
 	DefaultFormat      = "text"
 	DefaultTimeout     = 10 * time.Second
 
+	// Trials is how many isolated concurrent bursts run by default;
+	// MaxTrials is the deliberate ceiling for raising it.
+	DefaultTrials    = 1
+	DefaultMaxTrials = 10
+
+	// Settle waits after the burst so in-flight server work finishes
+	// before the replay; ReplayTimeout bounds the replay retry budget.
+	DefaultSettle        = 250 * time.Millisecond
+	DefaultReplayTimeout = 5 * time.Second
+
 	// Hard ceilings unless explicitly raised.
 	DefaultMaxConcurrency = 50
 	DefaultMaxRepeat      = 100
@@ -48,6 +58,15 @@ type Options struct {
 
 	IgnoreJSON   []string
 	IgnoreHeader []string
+
+	// Trials is how many isolated concurrent bursts the concurrency check
+	// runs; MaxTrials is the ceiling a user must raise deliberately.
+	Trials    int
+	MaxTrials int
+	// Settle waits after each burst before the replay; ReplayTimeout
+	// bounds that replay's retry budget.
+	Settle        time.Duration
+	ReplayTimeout time.Duration
 
 	// Policy selects verdict semantics: safe-retry (default) or
 	// strict-replay. TransientStatuses overrides the profile's default
@@ -124,6 +143,33 @@ func (o *Options) Validate() error {
 	}
 	if o.Repeat > o.MaxRepeat {
 		return fmt.Errorf("--repeat %d exceeds limit %d (raise --max-repeat deliberately if you really want this)", o.Repeat, o.MaxRepeat)
+	}
+
+	// Trials: 0 means "use the default"; negatives are user error, and
+	// exceeding the ceiling requires raising --max-trials on purpose.
+	if o.Trials < 0 {
+		return fmt.Errorf("--trials must not be negative (got %d)", o.Trials)
+	}
+	if o.Trials == 0 {
+		o.Trials = DefaultTrials
+	}
+	if o.MaxTrials <= 0 {
+		o.MaxTrials = DefaultMaxTrials
+	}
+	if o.Trials > o.MaxTrials {
+		return fmt.Errorf("--trials %d exceeds limit %d (raise --max-trials deliberately if you really want this)", o.Trials, o.MaxTrials)
+	}
+	if o.Settle < 0 {
+		return fmt.Errorf("--settle must not be negative (got %s)", o.Settle)
+	}
+	if o.Settle == 0 {
+		o.Settle = DefaultSettle
+	}
+	if o.ReplayTimeout < 0 {
+		return fmt.Errorf("--replay-timeout must not be negative (got %s)", o.ReplayTimeout)
+	}
+	if o.ReplayTimeout == 0 {
+		o.ReplayTimeout = DefaultReplayTimeout
 	}
 
 	switch o.Format {

@@ -19,8 +19,10 @@ type Group struct {
 
 // CheckResult is the outcome of one scenario.
 type CheckResult struct {
-	ID     string
-	Name   string
+	ID   string
+	Name string
+	// Status is the verdict: PASS / FAIL / INCONCLUSIVE (ERROR for
+	// execution failures).
 	Status models.CheckStatus
 	// Requests is how many requests were attempted.
 	Requests int
@@ -53,6 +55,15 @@ type CheckResult struct {
 	DifferingFields []string
 	// EvidenceFields maps fingerprint -> JSON path -> observed value.
 	EvidenceFields map[string]map[string]any
+	// ActionPhases records what executed before the verdict: BURST, SETTLE,
+	// REPLAY lines. The evaluator's reasoning is appended as VERDICT by
+	// ToModel.
+	ActionPhases []string
+	// Trials is how many isolated trials were aggregated into this result
+	// (1 for a single run).
+	Trials int
+	// Replay carries the REPLAY outcome when a replay phase ran.
+	Replay *ReplayInfo
 }
 
 // collect fingerprints raw outcomes and groups them. Transport errors are
@@ -188,8 +199,17 @@ func (r *CheckResult) Evidence(labels map[string]string) []models.EvidenceGroup 
 	return out
 }
 
-// ToModel converts a CheckResult into the report model.
+// ToModel converts a CheckResult into the report model. Phases list what
+// actually executed, ending with VERDICT carrying the reasoning.
 func (r *CheckResult) ToModel() models.Check {
+	phases := make([]string, 0, len(r.ActionPhases)+1)
+	phases = append(phases, r.ActionPhases...)
+	if r.Detail != "" && r.Status != models.StatusSkip {
+		phases = append(phases, "VERDICT: "+r.Detail)
+	}
+	if len(phases) == 0 {
+		phases = nil
+	}
 	return models.Check{
 		ID:              r.ID,
 		Name:            r.Name,
@@ -199,5 +219,7 @@ func (r *CheckResult) ToModel() models.Check {
 		Detail:          r.Detail,
 		DurationMS:      r.Duration.Milliseconds(),
 		Timings:         r.Timings,
+		Phases:          phases,
+		Trials:          r.Trials,
 	}
 }

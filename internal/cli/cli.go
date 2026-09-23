@@ -102,6 +102,10 @@ func newTestCmd(exitCode *int) *cobra.Command {
 		transient   []int
 		maxBody     int64
 		sensitive   []string
+		trials      int
+		maxTrials   int
+		settle      time.Duration
+		replayTO    time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -137,6 +141,10 @@ Exit codes: 0 pass, 1 violation, 2 config/execution error, 3 inconclusive.`,
 				TransientStatuses: transient,
 				SensitiveHeaders:  sensitive,
 				MaxBodyBytes:      maxBody,
+				Trials:            trials,
+				MaxTrials:         maxTrials,
+				Settle:            settle,
+				ReplayTimeout:     replayTO,
 			}
 
 			// YAML config provides defaults; flags win: ignore lists append,
@@ -216,6 +224,10 @@ Exit codes: 0 pass, 1 violation, 2 config/execution error, 3 inconclusive.`,
 	f.IntSliceVar(&transient, "transient-status", nil, "HTTP statuses treated as acceptable transients, e.g. 409,429 (overrides --policy default and config)")
 	f.Int64Var(&maxBody, "max-body-bytes", httpx.DefaultMaxBodyBytes, "per-response body read limit; larger bodies make the check inconclusive")
 	f.StringArrayVar(&sensitive, "sensitive-header", nil, "extra header name to redact from all output (repeatable)")
+	f.IntVar(&trials, "trials", config.DefaultTrials, "isolated concurrent bursts for race detection (each gets its own key)")
+	f.IntVar(&maxTrials, "max-trials", config.DefaultMaxTrials, "safety ceiling for --trials")
+	f.DurationVar(&settle, "settle", config.DefaultSettle, "wait after the burst before the replay phase")
+	f.DurationVar(&replayTO, "replay-timeout", config.DefaultReplayTimeout, "retry budget for the replay phase")
 
 	return cmd
 }
@@ -250,13 +262,16 @@ func runTest(cmd *cobra.Command, opts *config.Options, warnings []string, exitCo
 		return fail(err)
 	}
 	runner := &engine.Runner{
-		Client:      client,
-		Spec:        spec,
-		FPOpts:      fingerprint.Options{IgnoreJSONPaths: opts.IgnoreJSON, IgnoreHeaders: opts.IgnoreHeader},
-		BaseKey:     opts.Key,
-		Repeat:      opts.Repeat,
-		Concurrency: opts.Concurrency,
-		Policy:      pol,
+		Client:        client,
+		Spec:          spec,
+		FPOpts:        fingerprint.Options{IgnoreJSONPaths: opts.IgnoreJSON, IgnoreHeaders: opts.IgnoreHeader},
+		BaseKey:       opts.Key,
+		Repeat:        opts.Repeat,
+		Concurrency:   opts.Concurrency,
+		Policy:        pol,
+		Trials:        opts.Trials,
+		Settle:        opts.Settle,
+		ReplayTimeout: opts.ReplayTimeout,
 	}
 
 	results, err := runner.Run(ctx)

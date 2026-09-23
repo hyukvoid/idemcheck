@@ -57,7 +57,9 @@ func resultLabel(s models.Summary) string {
 	}
 }
 
-// renderCheckLine prints "Name ...... STATUS" with names padded to a column.
+// renderCheckLine prints "Name ...... STATUS" with names padded to a column,
+// followed by the phases that executed (BURST / SETTLE / REPLAY / VERDICT).
+// When no phases were recorded it falls back to the plain detail line.
 func renderCheckLine(w io.Writer, c models.Check) {
 	const col = 42
 	name := c.Name
@@ -66,8 +68,14 @@ func renderCheckLine(w io.Writer, c models.Check) {
 		dots = 1
 	}
 	fmt.Fprintf(w, "%s %s %s\n", name, strings.Repeat(".", dots), statusLabel(c.Status))
-	// INCONCLUSIVE/SKIP/ERROR lines carry the reason they stopped short of
-	// a verdict; FAIL details render with the violation evidence below.
+	if len(c.Phases) > 0 {
+		for _, p := range c.Phases {
+			fmt.Fprintf(w, "  %s\n", p)
+		}
+		return
+	}
+	// Checks without phases (skips, or a detail-only outcome) still carry
+	// the reason they stopped short of a verdict.
 	if (c.Status == models.StatusInconclusive || c.Status == models.StatusSkip ||
 		c.Status == models.StatusError) && c.Detail != "" {
 		fmt.Fprintf(w, "  %s\n", c.Detail)
@@ -121,9 +129,8 @@ func renderViolationBody(w io.Writer, res *models.Result, v models.Violation) {
 			fmt.Fprintf(w, "  %s\n", f)
 		}
 	}
-	if check != nil && check.Detail != "" {
-		fmt.Fprintf(w, "\n%s\n", check.Detail)
-	}
+	// The check's detail already rendered as its VERDICT phase line above,
+	// so it is not repeated here.
 	if res.Reproduce != nil && res.Reproduce.Command != "" {
 		fmt.Fprint(w, "\nRe-run:\n\n")
 		fmt.Fprintln(w, res.Reproduce.Command)

@@ -161,10 +161,13 @@ func TestSequentialCounts(t *testing.T) {
 
 // Distinct responses must group with counts and expose differing fields.
 func TestCollectGroupsAndEvidence(t *testing.T) {
+	// A counter, not the wall clock: time-based ids can collide (coarse
+	// clock granularity), which would silently collapse every group and
+	// make this test flaky.
+	var next atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Distinct order_id per hit; request_id is volatile and ignored.
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"order_id":%d,"request_id":"volatile"}`, time.Now().UnixNano()%1000)
+		fmt.Fprintf(w, `{"order_id":%d,"request_id":"volatile"}`, next.Add(1))
 	}))
 	defer srv.Close()
 

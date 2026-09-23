@@ -33,6 +33,14 @@ type Runner struct {
 	Concurrency int
 	// Policy decides verdict semantics (default safe-retry when unset).
 	Policy config.Policy
+	// Trials is how many isolated bursts the concurrent check runs (a
+	// value below 1 is treated as 1).
+	Trials int
+	// Settle waits after the burst before the REPLAY phase so in-flight
+	// server work can finish. Zero means no settle (engine zero-value).
+	Settle time.Duration
+	// ReplayTimeout bounds the REPLAY phase's retry budget.
+	ReplayTimeout time.Duration
 	// OnCheck is invoked after each check completes (live terminal output).
 	OnCheck func(CheckResult)
 }
@@ -51,12 +59,16 @@ func (r *Runner) Run(ctx context.Context) ([]CheckResult, error) {
 	}
 
 	// Check 1: sequential ×2.
-	seq2, err := Sequential(ctx, r.Client, r.Spec, configKey(r.BaseKey, ScSeq2), 2, r.FPOpts)
+	seq2Key := configKey(r.BaseKey, ScSeq2)
+	seq2, err := Sequential(ctx, r.Client, r.Spec, seq2Key, 2, r.FPOpts)
 	if err != nil {
 		return nil, err
 	}
 	seq2.ID, seq2.Name = ScSeq2, "Sequential retry ×2"
-	evaluateSameKey(seq2, pol)
+	// SETTLE+REPLAY run only when transients need confirmation.
+	if err := r.finalizeSameKey(ctx, seq2, r.Spec, seq2Key, pol, false); err != nil {
+		return nil, err
+	}
 
 	// A rejected baseline means the test itself is misconfigured; report it
 	// as an execution failure rather than a misleading pass, and skip the
@@ -84,12 +96,15 @@ func (r *Runner) Run(ctx context.Context) ([]CheckResult, error) {
 
 	// Check 2: sequential stress with the same key.
 	if r.Repeat > 2 {
-		seqN, err := Sequential(ctx, r.Client, r.Spec, configKey(r.BaseKey, ScSeqN), r.Repeat, r.FPOpts)
+		seqNKey := configKey(r.BaseKey, ScSeqN)
+		seqN, err := Sequential(ctx, r.Client, r.Spec, seqNKey, r.Repeat, r.FPOpts)
 		if err != nil {
 			return results, err
 		}
 		seqN.ID, seqN.Name = ScSeqN, fmt.Sprintf("Sequential retry ×%d", r.Repeat)
-		evaluateSameKey(seqN, pol)
+		if err := r.finalizeSameKey(ctx, seqN, r.Spec, seqNKey, pol, false); err != nil {
+			return results, err
+		}
 		emit(*seqN)
 	} else {
 		emit(CheckResult{
@@ -99,13 +114,12 @@ func (r *Runner) Run(ctx context.Context) ([]CheckResult, error) {
 	}
 
 	// Check 3: the barrier-synchronized concurrent burst — the core test.
-	conc, err := Concurrent(ctx, r.Client, r.Spec, configKey(r.BaseKey, ScConcurrent), r.Concurrency, r.FPOpts)
+	// Each trial is an isolated key: BURST -> SETTLE -> REPLAY -> VERDICT.
+	concRes, err := r.runConcurrentTrials(ctx, pol)
 	if err != nil {
 		return results, err
 	}
-	conc.ID, conc.Name = ScConcurrent, fmt.Sprintf("Concurrent retry ×%d", r.Concurrency)
-	evaluateSameKey(conc, pol)
-	emit(*conc)
+	emit(concRes)
 
 	// Check 4: same key + modified payload (classified, never assumed).
 	payloadRes, err := r.runPayloadConflict(ctx)
@@ -127,18 +141,20 @@ func (r *Runner) Run(ctx context.Context) ([]CheckResult, error) {
 // evaluateSameKey assigns a verdict to a same-key check under the active
 // policy. Verdict identity is the normalized response BODY of 2xx results:
 // status class (201 vs 200) and headers collapse — they stay in the
-// fingerprint evidence only. Rules, in order:
+// fingerprint evidence only. rp describes the REPLAY phase (nil when no
+// replay ran). Rules, in order:
 //
 //  1. nothing observed -> ERROR (execution failure)
 //  2. two or more distinct success bodies -> FAIL (concrete divergence)
 //  3. oversize / transport / unknown statuses -> INCONCLUSIVE (partial evidence)
 //  4. only transients, or transients alongside one success -> INCONCLUSIVE
-//     (the REPLAY phase that confirms transient-tolerated convergence lands
-//     with the phase machinery; until then these never report PASS)
-//  5. exactly one success body, nothing else -> PASS
+//     unless the replay confirmed a logical result; an unconfirmed or
+//     exhausted replay never reports PASS
+//  5. exactly one success body, nothing else -> PASS (noted when the
+//     replay agreed with the burst)
 //
 // Uncertainty is never turned into a pass.
-func evaluateSameKey(res *CheckResult, pol config.Policy) {
+func evaluateSameKey(res *CheckResult, pol config.Policy, rp *ReplayInfo) {
 	successBodies := map[string]bool{}
 	transient, unknown := 0, 0
 	unknownStatuses := map[int]bool{}
@@ -186,21 +202,78 @@ func evaluateSameKey(res *CheckResult, pol config.Policy) {
 	case len(successBodies) == 0:
 		// Transients only (policy accepted them, but nothing to compare).
 		res.Status = models.StatusInconclusive
-		res.Detail = fmt.Sprintf("%d transient response(s) under policy %s; no logical result to compare", transient, pol.Profile)
+		if rp != nil && rp.Exhausted {
+			res.Detail = fmt.Sprintf("%d transient response(s) under policy %s; replay retry budget exhausted before a logical result",
+				transient, pol.Profile)
+		} else {
+			res.Detail = fmt.Sprintf("%d transient response(s) under policy %s; no logical result to compare", transient, pol.Profile)
+		}
 
 	case transient > 0:
-		// One logical result plus policy-acceptable transients: pending
-		// replay confirmation -> inconclusive, not a pass.
-		res.Status = models.StatusInconclusive
-		res.Detail = fmt.Sprintf("1 logical result observed but %d transient response(s) under policy %s need replay confirmation",
-			transient, pol.Profile)
+		// One logical result plus policy-acceptable transients. Only a
+		// replay that answered with a logical result can lift the doubt;
+		// without confirmation this stays inconclusive, not a pass.
+		if rp != nil && rp.Confirmed {
+			res.Status = models.StatusPass
+			res.Detail = fmt.Sprintf("%d requests converged on 1 logical result; replay confirmed it after %d transient response(s) under policy %s",
+				res.Observed, transient, pol.Profile)
+		} else {
+			res.Status = models.StatusInconclusive
+			res.Detail = fmt.Sprintf("1 logical result observed but %d transient response(s) under policy %s need replay confirmation",
+				transient, pol.Profile)
+		}
 
 	default:
 		// Exactly one logical result; every observed response was a 2xx
 		// carrying that body.
 		res.Status = models.StatusPass
-		res.Detail = fmt.Sprintf("%d requests converged on 1 logical result", res.Observed)
+		if rp != nil && rp.Confirmed {
+			res.Detail = fmt.Sprintf("%d requests converged on 1 logical result (replay agreed)", res.Observed)
+		} else {
+			res.Detail = fmt.Sprintf("%d requests converged on 1 logical result", res.Observed)
+		}
 	}
+}
+
+// runConcurrentTrials executes the core concurrency check: one trial per
+// iteration of BURST -> SETTLE -> REPLAY -> VERDICT, each with its own
+// isolated idempotency key so server-side state from one burst can never
+// mask the next. A single trial is returned as-is (Trials=1); multiple
+// trials aggregate into one reportable result where the most decisive
+// verdict wins and evidence comes from that trial.
+func (r *Runner) runConcurrentTrials(ctx context.Context, pol config.Policy) (CheckResult, error) {
+	trials := r.Trials
+	if trials < 1 {
+		trials = 1
+	}
+	name := fmt.Sprintf("Concurrent retry ×%d", r.Concurrency)
+
+	results := make([]CheckResult, 0, trials)
+	for t := 1; t <= trials; t++ {
+		key := r.BaseKey
+		if trials > 1 {
+			key = configKey(r.BaseKey, fmt.Sprintf("%s-t%d", ScConcurrent, t))
+		}
+		res, err := Concurrent(ctx, r.Client, r.Spec, key, r.Concurrency, r.FPOpts)
+		if err != nil {
+			return CheckResult{}, err
+		}
+		res.ID, res.Name = ScConcurrent, name
+		res.ActionPhases = []string{burstPhase(r.Concurrency, res.Timings)}
+		// alwaysReplay: after the burst settles, replay the same key to
+		// confirm the stored logical result.
+		if err := r.finalizeSameKey(ctx, res, r.Spec, key, pol, true); err != nil {
+			return CheckResult{}, err
+		}
+		results = append(results, *res)
+	}
+
+	if trials == 1 {
+		single := results[0]
+		single.Trials = 1
+		return single, nil
+	}
+	return *aggregateTrials(results, r.Concurrency, r.Settle), nil
 }
 
 // runPayloadConflict sends the original payload, then a modified payload,

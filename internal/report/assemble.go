@@ -97,6 +97,11 @@ func violationFor(r engine.CheckResult) models.Violation {
 	switch r.ID {
 	case engine.ScConcurrent:
 		v.Type = "concurrent_race"
+		if r.Trials > 1 {
+			// Aggregated verdict: say how many bursts showed the race.
+			v.Message = r.Detail
+			break
+		}
 		v.Message = fmt.Sprintf("%d concurrent requests\n1 idempotency key\n%d distinct logical results",
 			r.Requests, logical)
 	case engine.ScPayload:
@@ -141,6 +146,9 @@ func ReproCommand(o config.Options) string {
 	}
 	if o.Repeat != config.DefaultRepeat {
 		fmt.Fprintf(&b, " \\\n  --repeat %d", o.Repeat)
+	}
+	if o.Trials != config.DefaultTrials && o.Trials > 0 {
+		fmt.Fprintf(&b, " \\\n  --trials %d", o.Trials)
 	}
 	fmt.Fprintf(&b, " \\\n  --key %s", shellQuote(o.Key))
 	if o.AllowRemote {

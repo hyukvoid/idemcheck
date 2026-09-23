@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,6 +127,10 @@ func runMatrix(t *testing.T, baseURL string) []engine.CheckResult {
 		BaseKey:     config.NewKey(),
 		Repeat:      10,
 		Concurrency: 10,
+		Trials:      1,
+		// CLI defaults: settle before the replay, bounded replay budget.
+		Settle:        250 * time.Millisecond,
+		ReplayTimeout: 5 * time.Second,
 	}
 	results, err := runner.Run(ctx)
 	if err != nil {
@@ -141,6 +146,19 @@ func findCheck(results []engine.CheckResult, id string) engine.CheckResult {
 		}
 	}
 	return engine.CheckResult{}
+}
+
+// assertPhases verifies the report model carries every phase prefix: the
+// final report must show what executed (BURST/SETTLE/REPLAY) and why
+// (VERDICT) without needing the docs.
+func assertPhases(t *testing.T, res engine.CheckResult, wants ...string) {
+	t.Helper()
+	phases := strings.Join(res.ToModel().Phases, "\n")
+	for _, want := range wants {
+		if !strings.Contains(phases, want) {
+			t.Errorf("check %s missing phase %q in:\n%s", res.ID, want, phases)
+		}
+	}
 }
 
 // Criterion 8: the safe API must pass every check, including concurrency.
@@ -168,9 +186,14 @@ func TestSafeAPIPasses(t *testing.T) {
 	if conc.Unique != 1 {
 		t.Fatalf("safe API produced %d unique responses under concurrency, want 1", conc.Unique)
 	}
-	if conc.Requests != 10 {
-		t.Fatalf("concurrent requests = %d, want 10", conc.Requests)
+	// 10 burst requests + 1 replay that confirms the stored result.
+	if conc.Requests != 11 {
+		t.Fatalf("concurrent requests = %d, want 11 (10 burst + 1 replay)", conc.Requests)
 	}
+	if conc.Trials != 1 {
+		t.Fatalf("trials = %d, want 1", conc.Trials)
+	}
+	assertPhases(t, conc, "BURST:", "SETTLE:", "REPLAY:", "VERDICT:")
 }
 
 // Criterion 9: the unsafe API must reliably fail the concurrent check.
@@ -208,6 +231,9 @@ func TestUnsafeAPIDetectsRace(t *testing.T) {
 			if res.Reproduce == nil || res.Reproduce.Command == "" {
 				t.Fatal("expected a reproducible re-run command")
 			}
+
+			concRes := findCheck(results, engine.ScConcurrent)
+			assertPhases(t, concRes, "BURST:", "SETTLE:", "REPLAY:", "VERDICT:")
 
 			// The demo story requires sequential retries to LOOK idempotent.
 			if seq := findCheck(results, engine.ScSeq2); seq.Status != models.StatusPass {
