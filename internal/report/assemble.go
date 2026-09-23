@@ -7,6 +7,7 @@ import (
 	"github.com/hyukvoid/idemcheck/internal/buildinfo"
 	"github.com/hyukvoid/idemcheck/internal/config"
 	"github.com/hyukvoid/idemcheck/internal/engine"
+	"github.com/hyukvoid/idemcheck/internal/httpx"
 	"github.com/hyukvoid/idemcheck/internal/models"
 	"github.com/hyukvoid/idemcheck/internal/redact"
 )
@@ -149,6 +150,9 @@ func ReproCommand(o config.Options) string {
 	}
 	if o.Trials != config.DefaultTrials && o.Trials > 0 {
 		fmt.Fprintf(&b, " \\\n  --trials %d", o.Trials)
+	}
+	if o.Fault != "" && o.Fault != httpx.FaultNone {
+		fmt.Fprintf(&b, " \\\n  --fault %s", shellQuote(o.Fault))
 	}
 	fmt.Fprintf(&b, " \\\n  --key %s", shellQuote(o.Key))
 	if o.AllowRemote {

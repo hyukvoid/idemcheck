@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hyukvoid/idemcheck/internal/httpx"
 	"github.com/hyukvoid/idemcheck/internal/redact"
 	"gopkg.in/yaml.v3"
 )
@@ -73,6 +74,10 @@ type Options struct {
 	// transient set when non-nil.
 	Policy            string
 	TransientStatuses []int
+	// Fault selects deterministic fault injection by a local reverse proxy
+	// in front of the target (none | lost-response). It never changes the
+	// request, only what the local hop does with the answer.
+	Fault string
 	// SensitiveHeaders are extra header names to redact from all output.
 	SensitiveHeaders []string
 	// MaxBodyBytes bounds response reads; 0 means the httpx default
@@ -170,6 +175,16 @@ func (o *Options) Validate() error {
 	}
 	if o.ReplayTimeout == 0 {
 		o.ReplayTimeout = DefaultReplayTimeout
+	}
+
+	// Fault modes are a fixed vocabulary: unknown values mean a typo, not
+	// an invitation to guess.
+	if o.Fault == "" {
+		o.Fault = httpx.FaultNone
+	}
+	if !httpx.ValidFault(o.Fault) {
+		return fmt.Errorf("--fault must be %q or %q (got %q)",
+			httpx.FaultNone, httpx.FaultLostResponse, o.Fault)
 	}
 
 	switch o.Format {

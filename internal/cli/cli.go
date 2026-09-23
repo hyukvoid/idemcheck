@@ -106,6 +106,7 @@ func newTestCmd(exitCode *int) *cobra.Command {
 		maxTrials   int
 		settle      time.Duration
 		replayTO    time.Duration
+		fault       string
 	)
 
 	cmd := &cobra.Command{
@@ -145,6 +146,7 @@ Exit codes: 0 pass, 1 violation, 2 config/execution error, 3 inconclusive.`,
 				MaxTrials:         maxTrials,
 				Settle:            settle,
 				ReplayTimeout:     replayTO,
+				Fault:             fault,
 			}
 
 			// YAML config provides defaults; flags win: ignore lists append,
@@ -228,6 +230,7 @@ Exit codes: 0 pass, 1 violation, 2 config/execution error, 3 inconclusive.`,
 	f.IntVar(&maxTrials, "max-trials", config.DefaultMaxTrials, "safety ceiling for --trials")
 	f.DurationVar(&settle, "settle", config.DefaultSettle, "wait after the burst before the replay phase")
 	f.DurationVar(&replayTO, "replay-timeout", config.DefaultReplayTimeout, "retry budget for the replay phase")
+	f.StringVar(&fault, "fault", httpx.FaultNone, "deterministic fault injection: none or lost-response (local proxy drops the first completed response)")
 
 	return cmd
 }
@@ -249,6 +252,21 @@ func runTest(cmd *cobra.Command, opts *config.Options, warnings []string, exitCo
 			return fail(err)
 		}
 		spec.Header.Add(name, value)
+	}
+
+	// Deterministic fault injection: a loopback reverse proxy sits between
+	// the client and the target, forwards every request verbatim, and
+	// injects the selected fault. The reported target stays the original.
+	if opts.Fault == httpx.FaultLostResponse {
+		fp, err := httpx.StartFaultProxy(opts.URL, opts.Fault)
+		if err != nil {
+			return fail(fmt.Errorf("start fault proxy: %w", err))
+		}
+		defer fp.Close()
+		spec.URL = fp.URL()
+		warnings = append(warnings, fmt.Sprintf(
+			"FAULT %s: local proxy %s forwards every request to %s and drops the first completed response (the request is still processed upstream)",
+			opts.Fault, fp.URL(), redact.URL(opts.URL)))
 	}
 
 	// Ctrl-C cancels the barrier and in-flight requests cleanly.
