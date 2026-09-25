@@ -86,9 +86,6 @@ To install the latest published version:
 go install github.com/hyukvoid/idemcheck/cmd/idemcheck@latest
 ```
 
-Both install commands were verified against the public Go module proxy. The
-pinned build reports `IdemCheck v1.0.0`.
-
 Prebuilt binaries for Windows, Linux, and macOS are on the
 [Releases](https://github.com/hyukvoid/idemcheck/releases) page (amd64 and
 arm64, with `SHA256SUMS`).
@@ -185,7 +182,7 @@ package layout are in [docs/REFERENCE.md](docs/REFERENCE.md).
 
 ## Development
 
-Run the checks used by the project:
+Before submitting changes:
 
 ```bash
 gofmt -l .
@@ -195,8 +192,8 @@ go test -race ./...
 go build ./...
 ```
 
-`go test ./...` runs reference fixtures A–J; see the
-[test matrix](docs/TEST_MATRIX.md). To build an executable:
+See the [test matrix](docs/TEST_MATRIX.md) for the expected behaviors covered
+by the test suite. To build an executable:
 
 ```bash
 go build -o bin/idemcheck ./cmd/idemcheck
